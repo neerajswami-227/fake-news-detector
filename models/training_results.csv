@@ -1,0 +1,4 @@
+Model,Accuracy,Precision,Recall,F1-Score,Best Params
+Logistic Regression,1.0,1.0,1.0,1.0,"{'C': 0.1, 'solver': 'liblinear'}"
+Passive Aggressive,1.0,1.0,1.0,1.0,"{'C': 0.01, 'loss': 'hinge'}"
+Random Forest,1.0,1.0,1.0,1.0,"{'max_depth': 10, 'min_samples_split': 2, 'n_estimators': 100}"

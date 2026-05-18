@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            width: 350px;
+            padding: 15px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);
+            margin: 0;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .header h3 {
+            margin: 0;
+            color: #4f46e5;
+        }
+        .status {
+            background: white;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .result {
+            font-weight: bold;
+            font-size: 1.2rem;
+            margin: 10px 0;
+        }
+        .fake { color: #dc2626; }
+        .real { color: #16a34a; }
+        .confidence-bar {
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .confidence-fill {
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .fake-fill { background: #dc2626; }
+        .real-fill { background: #16a34a; }
+        button {
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 40px;
+            padding: 10px 16px;
+            width: 100%;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+        button:hover {
+            background: #4338ca;
+        }
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4f46e5;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .footer {
+            font-size: 11px;
+            text-align: center;
+            color: #6b7280;
+            margin-top: 15px;
+        }
+        .note {
+            font-size: 11px;
+            color: #6b7280;
+            text-align: center;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h3>🛡️ Fake News Detector</h3>
+        <p style="font-size: 12px; margin:0;">AI-powered verification</p>
+    </div>
+    <div id="content">
+        <div class="status">
+            <div id="analysisResult">Click "Analyze This Page" to check the current news article.</div>
+        </div>
+        <button id="analyzeBtn">🔍 Analyze This Page</button>
+        <button id="openWebApp" style="background: #64748b;">🌐 Open Web App</button>
+    </div>
+    <div class="footer">
+        Powered by ML | 93.7% accuracy
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

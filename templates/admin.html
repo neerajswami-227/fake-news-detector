@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Panel - System Management{% endblock %}
+
+{% block extra_css %}
+<style>
+    .admin-stat {
+        background: white;
+        border-radius: 15px;
+        padding: 20px;
+        text-align: center;
+        transition: transform 0.3s;
+        height: 100%;
+    }
+    
+    .admin-stat:hover {
+        transform: translateY(-3px);
+    }
+    
+    .admin-stat-number {
+        font-size: 2rem;
+        font-weight: bold;
+        margin: 10px 0;
+    }
+    
+    .section-card {
+        background: white;
+        border-radius: 15px;
+        overflow: hidden;
+        margin-bottom: 20px;
+    }
+    
+    .section-header {
+        background: linear-gradient(135deg, var(--primary), var(--secondary));
+        color: white;
+        padding: 15px 20px;
+        font-weight: 600;
+    }
+    
+    .section-body {
+        padding: 20px;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    
+    .table-container {
+        max-height: 350px;
+        overflow-y: auto;
+    }
+    
+    .table th {
+        position: sticky;
+        top: 0;
+        background: #f8f9fa;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h2 class="text-white mb-4">
+    <i class="fas fa-crown me-2"></i>Admin Dashboard
+</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="admin-stat">
+            <i class="fas fa-users fa-2x text-primary"></i>
+            <div class="admin-stat-number">{{ stats.total_users }}</div>
+            <div class="text-muted">Total Users</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-stat">
+            <i class="fas fa-chart-line fa-2x text-success"></i>
+            <div class="admin-stat-number">{{ stats.total_checks }}</div>
+            <div class="text-muted">Total Checks</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-stat">
+            <i class="fas fa-flag fa-2x text-warning"></i>
+            <div class="admin-stat-number">{{ stats.total_reports }}</div>
+            <div class="text-muted">Reports Received</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-stat">
+            <i class="fas fa-hourglass-half fa-2x text-danger"></i>
+            <div class="admin-stat-number">{{ stats.pending_reports }}</div>
+            <div class="text-muted">Pending Reviews</div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="section-card">
+            <div class="section-header">
+                <i class="fas fa-list me-2"></i> Recent User Checks
+            </div>
+            <div class="section-body p-0">
+                <div class="table-container">
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>User</th>
+                                <th>News Snippet</th>
+                                <th>Result</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for check in recent_checks %}
+                            <tr>
+                                <td><small>{{ check.user.username if check.user else 'Unknown' }}</small></td>
+                                <td><small>{{ check.news_text[:50] }}...</small></td>
+                                <td>
+                                    <span class="badge-{{ 'fake' if check.result == 'FAKE' else 'real' }}">
+                                        {{ check.result }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="section-card">
+            <div class="section-header">
+                <i class="fas fa-flag me-2"></i> User Reports
+            </div>
+            <div class="section-body p-0">
+                <div class="table-container">
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>User</th>
+                                <th>Reported Content</th>
+                                <th>Date</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for report in pending_reports %}
+                            <tr>
+                                <td><small>{{ report.user.username }}</small></td>
+                                <td><small>{{ report.news_text[:40] }}...</small></td>
+                                <td><small>{{ report.reported_at.strftime('%Y-%m-%d') }}</small></td>
+                                <td>
+                                    <span class="badge bg-warning text-dark">Pending</span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="text-center mt-3">
+    <a href="{{ url_for('index') }}" class="btn btn-light">
+        <i class="fas fa-arrow-left me-2"></i> Back to Home
+    </a>
+</div>
+{% endblock %}

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake News Detector – AI Misinformation Detection</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        /* Animated Gradient Background */
+        @keyframes gradient {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        body {
+            background: linear-gradient(-45deg, #D8B4FE, #A7F3D0, #C4B5FD, #6EE7B7);
+            background-size: 400% 400%;
+            animation: gradient 15s ease infinite;
+            font-family: 'Inter', 'Poppins', system-ui, sans-serif;
+            min-height: 100vh;
+            padding-top: 20px;
+            padding-bottom: 40px;
+        }
+
+        /* Glassmorphism Navbar */
+        .navbar {
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(12px);
+            border-radius: 50px;
+            margin-top: 10px;
+            padding: 10px 25px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+        }
+        .navbar-brand {
+            font-weight: 700;
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, #7C3AED, #10B981);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .navbar-brand i {
+            background: none;
+            -webkit-background-clip: unset;
+            color: #7C3AED;
+        }
+        .btn-outline-light {
+            border: 1px solid #7C3AED;
+            border-radius: 40px;
+            color: #5B21B6;
+            background: white;
+            transition: all 0.2s;
+        }
+        .btn-outline-light:hover {
+            background: #7C3AED;
+            border-color: #7C3AED;
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(124,58,237,0.3);
+        }
+
+        /* Glassmorphism Cards */
+        .card, .detection-card, .feature-card, .stat-card, .chart-card, .extra-card {
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 32px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+        }
+        .card:hover, .detection-card:hover, .feature-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 20px 35px rgba(0,0,0,0.1);
+            border-color: rgba(124,58,237,0.3);
+        }
+
+        /* Buttons */
+        .btn-primary {
+            background: linear-gradient(135deg, #7C3AED, #10B981);
+            border: none;
+            padding: 10px 28px;
+            font-weight: 600;
+            border-radius: 40px;
+            color: white;
+            box-shadow: 0 4px 12px rgba(124,58,237,0.25);
+            transition: all 0.2s;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(124,58,237,0.4);
+        }
+
+        /* Form inputs (light) */
+        input, textarea, select {
+            background: white !important;
+            border: 1px solid #E2E8F0 !important;
+            border-radius: 20px !important;
+            padding: 12px 16px !important;
+            transition: all 0.2s;
+        }
+        input:focus, textarea:focus, select:focus {
+            border-color: #7C3AED !important;
+            box-shadow: 0 0 0 3px rgba(124,58,237,0.1) !important;
+            outline: none;
+        }
+
+        /* Footer */
+        footer {
+            background: rgba(255,255,255,0.4);
+            backdrop-filter: blur(8px);
+            border-radius: 30px;
+            margin-top: 50px;
+            padding: 20px;
+            color: #4B5563;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-up { animation: fadeInUp 0.5s ease both; }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar navbar-expand-lg">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="{{ url_for('index') }}">
+                    <i class="fas fa-shield-alt me-2"></i>Fake News Detector
+                </a>
+                <div class="ms-auto">
+                    <a href="#features" class="btn btn-link text-decoration-none me-2">Features</a>
+                    <a href="#about" class="btn btn-link text-decoration-none me-2">About</a>
+                    {% if current_user.is_authenticated %}
+                        <div class="dropdown d-inline-block">
+                            <button class="btn btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-user-circle me-1"></i> {{ current_user.username }}
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="{{ url_for('dashboard') }}"><i class="fas fa-chart-line me-2"></i> Dashboard</a></li>
+                                {% if current_user.is_admin %}
+                                <li><a class="dropdown-item" href="{{ url_for('admin_panel') }}"><i class="fas fa-crown me-2"></i> Admin</a></li>
+                                {% endif %}
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt me-2"></i> Logout</a></li>
+                            </ul>
+                        </div>
+                    {% else %}
+                        <a href="{{ url_for('login') }}" class="btn btn-outline-light me-2"><i class="fas fa-sign-in-alt me-1"></i> Login</a>
+                        <a href="{{ url_for('register') }}" class="btn btn-outline-light"><i class="fas fa-user-plus me-1"></i> Register</a>
+                    {% endif %}
+                </div>
+            </div>
+        </nav>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show mt-3" role="alert">
+                        <i class="fas fa-{% if category == 'success' %}check-circle{% elif category == 'danger' %}exclamation-circle{% else %}info-circle{% endif %} me-2"></i>
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+
+        <footer class="text-center">
+            <p class="mb-0">
+                <i class="fas fa-robot me-2"></i>Powered by Machine Learning | 93.7% Accuracy
+            </p>
+            <small>© 2026 Fake News Detection System | Digital India Initiative</small>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

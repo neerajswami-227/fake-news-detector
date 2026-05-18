@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard – Your Insights{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stat-card {
+        background: rgba(255,255,255,0.5);
+        backdrop-filter: blur(8px);
+        border-radius: 28px;
+        padding: 20px;
+        text-align: center;
+        transition: all 0.3s;
+    }
+    .stat-card:hover { transform: translateY(-6px); background: rgba(255,255,255,0.7); }
+    .stat-number {
+        font-size: 2.4rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #7C3AED, #10B981);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .donut-container {
+        max-width: 220px;
+        margin: 0 auto;
+        position: relative;
+    }
+    .donut-label {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #1F2937;
+    }
+    .fallback-circle {
+        width: 180px;
+        height: 180px;
+        border-radius: 50%;
+        background: #E2E8F0;
+        margin: 20px auto;
+        position: relative;
+        overflow: hidden;
+    }
+    .fallback-fill {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: linear-gradient(135deg, #10B981, #7C3AED);
+        transition: height 0.5s;
+    }
+    .history-table-container {
+        max-height: 500px;
+        overflow-y: auto;
+        border-radius: 20px;
+    }
+    .history-table th {
+        position: sticky;
+        top: 0;
+        background: #F3E8FF;
+        z-index: 10;
+    }
+    .badge-fake { background: #EF4444; color: white; padding: 4px 12px; border-radius: 40px; }
+    .badge-real { background: #10B981; color: white; padding: 4px 12px; border-radius: 40px; }
+    .progress-custom { height: 8px; background: #E2E8F0; border-radius: 10px; overflow: hidden; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="fw-bold"><i class="fas fa-chart-pie me-2" style="color: #7C3AED;"></i>Credibility Profile</h2>
+        <div>
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary rounded-pill me-2"><i class="fas fa-plus-circle me-1"></i> New Check</a>
+            <button onclick="location.reload()" class="btn btn-outline-secondary rounded-pill"><i class="fas fa-sync-alt me-1"></i> Refresh</button>
+        </div>
+    </div>
+
+    <!-- Stats Cards with Animated Counters -->
+    <div class="row g-3 mb-5">
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number" id="totalChecks">0</div><div class="text-secondary">Total Verifications</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-danger" id="fakeCount">0</div><div class="text-secondary">Fake Detected</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-success" id="realCount">0</div><div class="text-secondary">Credible News</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number" id="avgConf">0%</div><div class="text-secondary">Avg Confidence</div></div></div>
+    </div>
+
+    <div class="row g-4 mb-5">
+        <div class="col-md-6">
+            <div class="stat-card h-100">
+                <h5 class="mb-3"><i class="fas fa-chart-pie me-2"></i>Real vs Fake Ratio</h5>
+                <!-- Canvas for Chart.js donut -->
+                <div class="donut-container">
+                    <canvas id="donutChart" width="200" height="200" style="display: block;"></canvas>
+                    <div class="donut-label" id="donutTotal">0</div>
+                </div>
+                <!-- Fallback (hidden by default) -->
+                <div id="fallbackDonut" style="display: none; text-align: center;">
+                    <div class="fallback-circle" id="fallbackCircle">
+                        <div class="fallback-fill" id="fallbackFill" style="height: 0%;"></div>
+                    </div>
+                    <p class="mt-2"><span id="fallbackPercent">0</span>% Real</p>
+                </div>
+                <div class="text-center mt-3">
+                    <span class="badge-real me-2">✅ Real <span id="realBadge">0</span></span>
+                    <span class="badge-fake">⚠️ Fake <span id="fakeBadge">0</span></span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="stat-card h-100">
+                <h5 class="mb-3"><i class="fas fa-chart-line me-2"></i>Insight Snapshot</h5>
+                <p>You've identified <strong id="realPercent">0%</strong> credible news among your checks.</p>
+                <div class="progress-custom mt-2">
+                    <div class="bg-success rounded-pill" id="credibilityProgress" style="width: 0%; height: 8px;"></div>
+                </div>
+                <hr>
+                <div class="d-flex justify-content-between">
+                    <span><i class="fas fa-calendar-week"></i> Total checks</span>
+                    <span><strong id="totalChecksSmall">0</strong></span>
+                </div>
+                <div class="mt-3 alert alert-success bg-opacity-25 border-success">
+                    <i class="fas fa-lightbulb"></i> Keep fact‑checking – you're helping fight misinformation!
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Table (same as before) -->
+    <div class="card bg-white bg-opacity-50 backdrop-blur-sm">
+        <div class="card-header bg-transparent border-bottom-0">
+            <i class="fas fa-history me-2"></i> Detailed History
+            <span class="badge bg-primary ms-2">{{ history|length }} records</span>
+        </div>
+        <div class="card-body p-0">
+            {% if history and history|length > 0 %}
+            <div class="history-table-container">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr><th style="min-width: 150px;">Date & Time</th><th>News Snippet</th><th>Result</th><th>Confidence</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for check in history %}
+                        <tr>
+                            <td class="text-muted small">{{ check.checked_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                            <td>{{ check.news_text[:100] }}{% if check.news_text|length > 100 %}...{% endif %}</td>
+                            <td><span class="badge-{{ 'fake' if check.result == 'FAKE' else 'real' }}">{{ check.result }}</span></td>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="progress-custom flex-grow-1"><div class="rounded-pill {% if check.result == 'FAKE' %}bg-danger{% else %}bg-success{% endif %}" style="width: {{ check.confidence }}%; height: 6px;"></div></div>
+                                    <span class="small">{{ "%.1f"|format(check.confidence) }}%</span>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-5">
+                <i class="fas fa-chart-line fa-3x mb-3 opacity-50"></i>
+                <h5>No history yet</h5>
+                <p>Start checking news to see your activity.</p>
+                <a href="{{ url_for('index') }}" class="btn btn-primary rounded-pill">Check Now</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+<script>
+    // Data from backend
+    const realCount = {{ stats.real_count }};
+    const fakeCount = {{ stats.fake_count }};
+    const total = realCount + fakeCount;
+    const avgConf = {{ stats.avg_confidence }};
+
+    // Animated counter function
+    function animateCounter(elementId, target, suffix='') {
+        let current = 0;
+        const step = Math.ceil(target / 50);
+        const interval = setInterval(() => {
+            current += step;
+            if (current >= target) {
+                document.getElementById(elementId).innerText = target + suffix;
+                clearInterval(interval);
+            } else {
+                document.getElementById(elementId).innerText = current + suffix;
+            }
+        }, 20);
+    }
+
+    animateCounter('totalChecks', total);
+    animateCounter('fakeCount', fakeCount);
+    animateCounter('realCount', realCount);
+    animateCounter('avgConf', Math.round(avgConf), '%');
+    document.getElementById('totalChecksSmall').innerText = total;
+    document.getElementById('realBadge').innerText = realCount;
+    document.getElementById('fakeBadge').innerText = fakeCount;
+    const realPercent = total ? (realCount / total * 100).toFixed(1) : 0;
+    document.getElementById('realPercent').innerText = realPercent;
+    document.getElementById('credibilityProgress').style.width = realPercent + '%';
+    document.getElementById('donutTotal').innerText = total;
+
+    // Attempt to draw donut chart using Chart.js
+    const ctx = document.getElementById('donutChart').getContext('2d');
+    let chart;
+    try {
+        chart = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Real News', 'Fake News'],
+                datasets: [{
+                    data: [realCount, fakeCount],
+                    backgroundColor: ['#059669', '#DC2626'],
+                    borderWidth: 2,
+                    borderColor: 'white',
+                    cutout: '70%'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { position: 'bottom', labels: { color: '#1F2937', font: { size: 14 } } },
+                    tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.raw} checks (${((ctx.raw/total)*100).toFixed(1)}%)` } }
+                }
+            }
+        });
+    } catch(e) {
+        console.warn("Chart.js failed, using fallback", e);
+        document.getElementById('donutChart').style.display = 'none';
+        document.getElementById('fallbackDonut').style.display = 'block';
+        const fallbackFill = document.getElementById('fallbackFill');
+        const fallbackPercent = document.getElementById('fallbackPercent');
+        const percentReal = total ? (realCount / total * 100) : 0;
+        fallbackFill.style.height = percentReal + '%';
+        fallbackPercent.innerText = Math.round(percentReal);
+    }
+
+    // If total is zero, hide canvas and show fallback message in donut area
+    if (total === 0) {
+        if (chart) chart.destroy();
+        document.getElementById('donutChart').style.display = 'none';
+        document.getElementById('fallbackDonut').style.display = 'block';
+        document.getElementById('fallbackFill').style.height = '0%';
+        document.getElementById('fallbackPercent').innerText = '0';
+        document.getElementById('fallbackCircle').style.background = '#E2E8F0';
+        const msg = document.createElement('p');
+        msg.className = 'text-muted mt-2';
+        msg.innerText = 'No data yet. Start checking news!';
+        document.getElementById('fallbackDonut').appendChild(msg);
+    }
+</script>
+{% endblock %}
