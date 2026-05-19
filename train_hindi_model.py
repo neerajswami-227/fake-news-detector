@@ -1,6 +1,6 @@
-# train_hindi_model.py (fixed)
+# train_hindi_model.py – Optimised for memory (max_features=5000, joblib compression)
 import pandas as pd
-import pickle
+import joblib
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -16,7 +16,7 @@ except ImportError:
         return str(text)
 
 print("="*60)
-print("Training Hindi Fake News Detection Model")
+print("Training Hindi Fake News Detection Model (Optimised)")
 print("="*60)
 
 # Load dataset
@@ -82,7 +82,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
-# Feature extraction
+# Feature extraction (max_features=5000 keeps model small)
 vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1,2))
 X_train_tfidf = vectorizer.fit_transform(X_train)
 X_test_tfidf = vectorizer.transform(X_test)
@@ -98,10 +98,16 @@ print(f"\n✅ Accuracy: {accuracy:.4f}")
 print("\nClassification Report:")
 print(classification_report(y_test, y_pred, target_names=['Real', 'Fake']))
 
-# Save
+# Save compressed joblib models (for production)
 os.makedirs('models', exist_ok=True)
+joblib.dump(model, 'models/hindi_model.joblib', compress=3)
+joblib.dump(vectorizer, 'models/hindi_vectorizer.joblib', compress=3)
+print("\n✅ Hindi model and vectorizer saved to models/ as .joblib (compressed)")
+
+# Optional: also save .pkl for backward compatibility (if your app needs it)
+import pickle
 with open('models/hindi_model.pkl', 'wb') as f:
     pickle.dump(model, f)
 with open('models/hindi_vectorizer.pkl', 'wb') as f:
     pickle.dump(vectorizer, f)
-print("\n✅ Hindi model and vectorizer saved to models/")
+print("   ✅ Also saved .pkl versions for compatibility")
