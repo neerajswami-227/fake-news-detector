@@ -1,5 +1,5 @@
 """
-Universal News Scraper - Improved for better text extraction and neutral fallback.
+Universal News Scraper – Returns meaningful text for accurate prediction
 """
 
 import requests
@@ -36,8 +36,9 @@ class NewsScraper:
         return text.strip()
     
     def scrape_article(self, url):
+        # Return cached copy if available
         if url in self._cache:
-            print(f"📦 Cached: {url}")
+            print(f"📦 Using cached result for {url}")
             return self._cache[url].copy()
 
         result = {
@@ -71,16 +72,21 @@ class NewsScraper:
                 title_tag = soup.find('title')
             result['title'] = title_tag.get_text(strip=True) if title_tag else ''
             
-            # Try to find article container
-            article = soup.find('article')
+            # Extract content: try article, main, common content containers
+            content_selectors = ['article', 'main', '.article-body', '.content', '.post-content', '.story-content']
             paragraphs = []
-            if article:
-                for p in article.find_all('p'):
-                    text = p.get_text(strip=True)
-                    if len(text) > 40:
-                        paragraphs.append(text)
-            else:
-                # Fallback: all substantial paragraphs
+            for selector in content_selectors:
+                container = soup.select_one(selector)
+                if container:
+                    for p in container.find_all('p'):
+                        text = p.get_text(strip=True)
+                        if len(text) > 40:
+                            paragraphs.append(text)
+                    if len(paragraphs) > 5:
+                        break
+            
+            # If still few, get all substantial paragraphs
+            if len(paragraphs) < 3:
                 for p in soup.find_all('p'):
                     text = p.get_text(strip=True)
                     if len(text) > 40 and not text.startswith(('Subscribe', 'Sign', 'Follow', 'Share', 'Advertisement')):
@@ -91,14 +97,15 @@ class NewsScraper:
             word_count = len(full_text.split())
             print(f"   Extracted {len(paragraphs)} paragraphs, {word_count} words")
             
-            # If too little text, build a neutral fallback from title + meta description + domain
+            # Build meaningful text – NEVER use generic "According to official sources..."
             if word_count < 80:
-                print("⚠️ Low content, using title+meta+domain fallback")
+                # Fallback: use title, meta description, domain
                 meta_desc = soup.find('meta', attrs={'name': 'description'})
                 meta = meta_desc.get('content', '') if meta_desc else ''
                 fallback = f"{result['title']}. {meta} Source: {result['domain']}"
-                result['text'] = fallback[:1500]
+                result['text'] = fallback[:2000]
                 result['word_count'] = len(fallback.split())
+                print(f"⚠️ Low content, using title+meta+domain fallback ({result['word_count']} words)")
             else:
                 result['text'] = full_text
                 result['word_count'] = word_count
@@ -107,12 +114,12 @@ class NewsScraper:
             print(f"✅ Success: {result['word_count']} words")
             
         except Exception as e:
-            # On error, use domain and title as fallback (still informative)
+            # Last resort: use title and domain (still meaningful)
             result['success'] = True
-            fallback = f"News article from {result['domain']}. Title: {result['title'] if result['title'] else 'No title'}"
-            result['text'] = fallback[:1500]
+            fallback = f"Article from {result['domain']}. Title: {result['title'] if result['title'] else 'No title'}"
+            result['text'] = fallback[:2000]
             result['word_count'] = len(fallback.split())
-            print(f"⚠️ Fallback: {str(e)[:50]}")
+            print(f"⚠️ Exception fallback: {str(e)[:50]}")
         
         self._cache[url] = result.copy()
         return result
