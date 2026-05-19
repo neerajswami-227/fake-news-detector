@@ -22,6 +22,14 @@ from flask_cors import CORS
 from language_utils import detect_language, translate_to_english
 from hindi_preprocess import preprocess_hindi   # only if you have Hindi preprocessing
 
+import nltk
+
+# Download required NLTK data (runs only once on server startup)
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('averaged_perceptron_tagger', quiet=True)
+
 # ============================================
 # CONFIGURATION
 # ============================================
