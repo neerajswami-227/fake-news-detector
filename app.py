@@ -140,21 +140,47 @@ model = None
 vectorizer = None
 
 def load_models():
-    """Load the trained model and vectorizer"""
+    """Load the trained model and vectorizer with robust error handling"""
     global model, vectorizer
+    import os
+    import traceback
+
     model_path = 'models/model.pkl'
     vectorizer_path = 'models/vectorizer.pkl'
-    
-    if os.path.exists(model_path) and os.path.exists(vectorizer_path):
+
+    # Debug: show current directory and list files in 'models/'
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Contents of 'models/' folder: {os.listdir('models') if os.path.exists('models') else 'models folder not found'}")
+
+    # Check if files exist
+    if not os.path.exists(model_path):
+        print(f"❌ Model file not found at {model_path}")
+        return False
+    if not os.path.exists(vectorizer_path):
+        print(f"❌ Vectorizer file not found at {vectorizer_path}")
+        return False
+
+    # Try to load with pickle
+    try:
         with open(model_path, 'rb') as f:
             model = pickle.load(f)
         with open(vectorizer_path, 'rb') as f:
             vectorizer = pickle.load(f)
-        print("✅ Model and vectorizer loaded successfully!")
+        print("✅ Model and vectorizer loaded successfully using pickle!")
         return True
-    else:
-        print("❌ Model files not found. Please run train_model.py first")
-        return False
+    except Exception as e:
+        print(f"❌ Pickle loading failed: {e}")
+        print(traceback.format_exc())
+        # Fallback: try using joblib (if available)
+        try:
+            import joblib
+            model = joblib.load(model_path)
+            vectorizer = joblib.load(vectorizer_path)
+            print("✅ Model and vectorizer loaded successfully using joblib!")
+            return True
+        except Exception as e2:
+            print(f"❌ Joblib loading also failed: {e2}")
+            return False
     
     # Load Hindi model if available
 hindi_model = None
@@ -581,6 +607,8 @@ def scrape_url():
 @app.route('/test', methods=['GET'])      # ← ADD THIS FOR TESTING
 def test():
         return jsonify({'status': 'ok', 'message': 'Server is running'})
+
+load_models()
 
 
 # ============================================
