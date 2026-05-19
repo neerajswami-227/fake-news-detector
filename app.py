@@ -197,33 +197,18 @@ def predict_news(text, language='auto'):
     """Multilingual prediction – auto-detects or uses manual language."""
     from language_utils import detect_language, translate_to_english
 
+    # Helper function to safely call English prediction
+    def safe_predict_english(txt):
+        try:
+            return predict_news_english(txt)
+        except Exception as e:
+            print(f"⚠️ English prediction failed: {e}")
+            return "REAL", 50.0   # fallback
+
     # Manual override
     if language == 'hi':
-        # Option A: use Hindi model if available
-        if hindi_model is not None:
-            from hindi_preprocess import preprocess_hindi
-            processed = preprocess_hindi(text)
-            vec = hindi_vectorizer.transform([processed])
-            pred = hindi_model.predict(vec)[0]
-            prob = hindi_model.predict_proba(vec)[0]
-            result = 'FAKE' if pred == 1 else 'REAL'
-            confidence = max(prob) * 100
-            print("🇮🇳 Using dedicated Hindi model")
-            return result, confidence
-        else:
-            # Fallback: translate to English
-            translated = translate_to_english(text)
-            print("🔄 Translating Hindi to English (fallback)")
-            return predict_news_english(translated)
-
-    elif language == 'en':
-        return predict_news_english(text)
-
-    else:  # auto-detect
-        lang = detect_language(text)
-        print(f"🌐 Detected language: {lang}")
-        if lang == 'hi':
-            if hindi_model is not None:
+        if hindi_model is not None and hindi_vectorizer is not None:
+            try:
                 from hindi_preprocess import preprocess_hindi
                 processed = preprocess_hindi(text)
                 vec = hindi_vectorizer.transform([processed])
@@ -233,27 +218,55 @@ def predict_news(text, language='auto'):
                 confidence = max(prob) * 100
                 print("🇮🇳 Using dedicated Hindi model")
                 return result, confidence
-            else:
-                translated = translate_to_english(text)
-                print("🔄 Translating Hindi to English (fallback)")
-                return predict_news_english(translated)
+            except Exception as e:
+                print(f"⚠️ Hindi model error: {e}, falling back to translation")
+        # Fallback: translate to English
+        translated = translate_to_english(text)
+        print("🔄 Translating Hindi to English (fallback)")
+        return safe_predict_english(translated)
+
+    elif language == 'en':
+        return safe_predict_english(text)
+
+    else:  # auto-detect
+        lang = detect_language(text)
+        print(f"🌐 Detected language: {lang}")
+        if lang == 'hi':
+            if hindi_model is not None and hindi_vectorizer is not None:
+                try:
+                    from hindi_preprocess import preprocess_hindi
+                    processed = preprocess_hindi(text)
+                    vec = hindi_vectorizer.transform([processed])
+                    pred = hindi_model.predict(vec)[0]
+                    prob = hindi_model.predict_proba(vec)[0]
+                    result = 'FAKE' if pred == 1 else 'REAL'
+                    confidence = max(prob) * 100
+                    print("🇮🇳 Using dedicated Hindi model")
+                    return result, confidence
+                except Exception as e:
+                    print(f"⚠️ Hindi model error: {e}, falling back to translation")
+            translated = translate_to_english(text)
+            print("🔄 Translating Hindi to English (fallback)")
+            return safe_predict_english(translated)
         else:
-            return predict_news_english(text)
+            return safe_predict_english(text)
 
 def predict_news_english(text):
-    """Original English prediction logic (unchanged)"""
+    """Original English prediction with fallback"""
     if model is None or vectorizer is None:
-        return None, None
-    
-    processed = preprocess_text(text)
-    vec = vectorizer.transform([processed])
-    prediction = model.predict(vec)[0]
-    probability = model.predict_proba(vec)[0]
-    
-    result = 'FAKE' if prediction == 1 else 'REAL'
-    confidence = max(probability) * 100
-    
-    return result, confidence
+        print("⚠️ English model not loaded – returning fallback prediction")
+        return "REAL", 50.0
+    try:
+        processed = preprocess_text(text)
+        vec = vectorizer.transform([processed])
+        prediction = model.predict(vec)[0]
+        probability = model.predict_proba(vec)[0]
+        result = 'FAKE' if prediction == 1 else 'REAL'
+        confidence = max(probability) * 100
+        return result, confidence
+    except Exception as e:
+        print(f"⚠️ Prediction error: {e}")
+        return "REAL", 50.0
 
 
 # ============================================
