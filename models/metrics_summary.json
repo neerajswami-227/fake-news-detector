@@ -1,20 +1,20 @@
 {
-  "best_model": "Logistic Regression",
-  "accuracy": 1.0,
-  "precision": 1.0,
-  "recall": 1.0,
-  "f1_score": 1.0,
+  "best_model": "Random Forest",
+  "accuracy": 0.9977723323680107,
+  "precision": 0.9987198634521015,
+  "recall": 0.9970181043663472,
+  "f1_score": 0.9978682583670859,
   "confusion_matrix": [
     [
-      1000,
-      0
+      4277,
+      6
     ],
     [
-      0,
-      1000
+      14,
+      4681
     ]
   ],
-  "training_samples": 8000,
-  "test_samples": 2000,
-  "features_count": 620
+  "training_samples": 35911,
+  "test_samples": 8978,
+  "features_count": 15000
 }

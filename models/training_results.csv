@@ -1,4 +1,4 @@
 Model,Accuracy,Precision,Recall,F1-Score,Best Params
-Logistic Regression,1.0,1.0,1.0,1.0,"{'C': 0.1, 'solver': 'liblinear'}"
-Passive Aggressive,1.0,1.0,1.0,1.0,"{'C': 0.01, 'loss': 'hinge'}"
-Random Forest,1.0,1.0,1.0,1.0,"{'max_depth': 10, 'min_samples_split': 2, 'n_estimators': 100}"
+Logistic Regression,0.9954332813544219,0.9974348011970928,0.9938232161874334,0.9956257334898112,"{'C': 5.0, 'solver': 'liblinear'}"
+Passive Aggressive,0.9971040320784139,0.9985052316890882,0.9959531416400426,0.9972275538494348,"{'C': 0.1, 'loss': 'squared_hinge'}"
+Random Forest,0.9977723323680107,0.9987198634521015,0.9970181043663472,0.9978682583670859,"{'max_depth': None, 'min_samples_split': 5, 'n_estimators': 200}"
