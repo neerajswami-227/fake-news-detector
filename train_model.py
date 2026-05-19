@@ -40,8 +40,8 @@ print("=" * 70)
 # STEP 1: LOAD AND PREPARE DATA
 # ============================================
 print("\n📂 STEP 1: Loading Kaggle Dataset...")
-fake_df = pd.read_csv('data/Fake.csv')
-true_df = pd.read_csv('data/True.csv')
+fake_df = pd.read_csv('data/Fake.csv', nrows=5000)
+true_df = pd.read_csv('data/True.csv', nrows=5000)
 print(f"   Fake: {len(fake_df):,} | Real: {len(true_df):,}")
 
 fake_df['label'] = 1

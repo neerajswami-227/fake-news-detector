@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard – History{% endblock %}
+{% block title %}Dashboard – Analytics{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -21,6 +21,20 @@
         background-clip: text;
         color: transparent;
     }
+    .donut-container {
+        max-width: 220px;
+        margin: 0 auto;
+        position: relative;
+    }
+    .donut-label {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #1F2937;
+    }
     .history-table-container {
         max-height: 500px;
         overflow-y: auto;
@@ -35,22 +49,26 @@
     }
     .badge-fake { background: #EF4444; color: white; padding: 4px 12px; border-radius: 40px; font-size: 0.8rem; }
     .badge-real { background: #10B981; color: white; padding: 4px 12px; border-radius: 40px; font-size: 0.8rem; }
-    .btn-details {
-        background: none;
-        border: none;
-        color: #7C3AED;
-        cursor: pointer;
-        font-size: 1.2rem;
-        transition: 0.2s;
+
+    /* Ring progress for confidence */
+    .ring-progress {
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8rem;
+        font-weight: bold;
+        background: conic-gradient(from 0deg, #7C3AED 0deg, #E5E7EB 0deg);
     }
-    .btn-details:hover { color: #4F46E5; transform: scale(1.1); }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="fw-bold"><i class="fas fa-chart-pie me-2" style="color: #7C3AED;"></i>History – Fake News Detection</h2>
+        <h2 class="fw-bold"><i class="fas fa-chart-pie me-2" style="color: #7C3AED;"></i>Credibility Dashboard</h2>
         <div>
             <a href="{{ url_for('index') }}" class="btn btn-outline-secondary rounded-pill me-2"><i class="fas fa-plus-circle me-1"></i> New Check</a>
             <button onclick="location.reload()" class="btn btn-outline-secondary rounded-pill"><i class="fas fa-sync-alt me-1"></i> Refresh</button>
@@ -59,13 +77,36 @@
 
     <!-- Stats Cards -->
     <div class="row g-3 mb-5">
-        <div class="col-md-3"><div class="stat-card"><div class="stat-number" id="totalChecks">0</div><div class="text-secondary">Total Verifications</div></div></div>
-        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-danger" id="fakeCount">0</div><div class="text-secondary">Fake Detected</div></div></div>
-        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-success" id="realCount">0</div><div class="text-secondary">Credible News</div></div></div>
-        <div class="col-md-3"><div class="stat-card"><div class="stat-number" id="avgConf">0%</div><div class="text-secondary">Avg Confidence</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number">{{ stats.total_checks }}</div><div class="text-secondary">Total Verifications</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-danger">{{ stats.fake_count }}</div><div class="text-secondary">Fake Detected</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number text-success">{{ stats.real_count }}</div><div class="text-secondary">Credible News</div></div></div>
+        <div class="col-md-3"><div class="stat-card"><div class="stat-number">{{ "%.1f"|format(stats.avg_confidence) }}%</div><div class="text-secondary">Avg Confidence</div></div></div>
     </div>
 
-    <!-- History Table -->
+    <!-- Donut Chart + Fact Graph Row -->
+    <div class="row g-4 mb-5">
+        <div class="col-md-6">
+            <div class="stat-card h-100">
+                <h5 class="mb-3"><i class="fas fa-chart-pie me-2"></i>Real vs Fake Ratio</h5>
+                <div class="donut-container">
+                    <canvas id="donutChart" width="200" height="200"></canvas>
+                    <div class="donut-label" id="donutTotal">{{ stats.total_checks }}</div>
+                </div>
+                <div class="text-center mt-3">
+                    <span class="badge-real me-2">✅ Real {{ stats.real_count }}</span>
+                    <span class="badge-fake">⚠️ Fake {{ stats.fake_count }}</span>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="stat-card h-100">
+                <h5 class="mb-3"><i class="fas fa-chart-line me-2"></i>Fact‑Checking Trend (Last 10 Checks)</h5>
+                <canvas id="trendChart" height="150"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Table (No ID, Confidence as Ring) -->
     <div class="card bg-white bg-opacity-50 backdrop-blur-sm">
         <div class="card-header bg-transparent border-bottom-0">
             <i class="fas fa-history me-2"></i> Detailed History
@@ -77,22 +118,16 @@
                 <table class="table table-hover mb-0 history-table">
                     <thead>
                         <tr>
-                            <th>ID</th>
-                            <th style="min-width: 150px;">Date & Time</th>
+                            <th>Date & Time</th>
                             <th>News Headline / Snippet</th>
                             <th>Prediction</th>
-                            <th>Confidence (%)</th>
-                            <th>Details</th>
+                            <th>Confidence</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for check in history %}
                         <tr>
-                            <td>{{ loop.index }}</td>
-                            <td class="text-muted small">
-                                {{ check.checked_at.strftime('%b %d, %Y') }}<br>
-                                {{ check.checked_at.strftime('%I:%M %p') }}
-                            </td>
+                            <td class="text-muted small">{{ check.checked_at|to_ist }}</td>
                             <td>
                                 {% if check.title %}
                                     {{ check.title[:100] }}{% if check.title|length > 100 %}...{% endif %}
@@ -102,14 +137,13 @@
                             </td>
                             <td>
                                 <span class="badge-{{ 'fake' if check.result == 'FAKE' else 'real' }}">
-                                    {% if check.result == 'FAKE' %}FAKE NEWS{% else %}REAL NEWS{% endif %}
+                                    {{ check.result }}
                                 </span>
                             </td>
-                            <td>{{ "%.1f"|format(check.confidence) }}%</td>
                             <td>
-                                <button class="btn-details" onclick="showDetails('{{ check.news_text|escapejs }}', '{{ check.title|default('', true)|escapejs }}', '{{ check.result }}', {{ check.confidence }})">
-                                    <i class="fas fa-eye"></i>
-                                </button>
+                                <div class="ring-progress" style="background: conic-gradient(#7C3AED 0deg {{ check.confidence }}%, #E5E7EB {{ check.confidence }}% 360deg);">
+                                    <span>{{ "%.0f"|format(check.confidence) }}%</span>
+                                </div>
                             </td>
                         </tr>
                         {% endfor %}
@@ -127,32 +161,57 @@
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 <script>
+    // Donut chart
     const realCount = {{ stats.real_count }};
     const fakeCount = {{ stats.fake_count }};
     const total = realCount + fakeCount;
-    const avgConf = {{ stats.avg_confidence }};
+    const ctx = document.getElementById('donutChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Real News', 'Fake News'],
+            datasets: [{
+                data: [realCount, fakeCount],
+                backgroundColor: ['#10B981', '#EF4444'],
+                borderWidth: 0,
+                cutout: '70%'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: { legend: { position: 'bottom', labels: { color: '#1F2937' } } }
+        }
+    });
 
-    function animateCounter(id, target, suffix='') {
-        let current = 0;
-        const step = Math.ceil(target / 50);
-        const interval = setInterval(() => {
-            current += step;
-            if (current >= target) {
-                document.getElementById(id).innerText = target + suffix;
-                clearInterval(interval);
-            } else {
-                document.getElementById(id).innerText = current + suffix;
+    // Trend chart (last 10 checks – pass data from backend)
+    const trendLabels = {{ trend_labels | tojson }};
+    const trendData = {{ trend_data | tojson }};
+    if (trendLabels.length) {
+        const trendCtx = document.getElementById('trendChart').getContext('2d');
+        new Chart(trendCtx, {
+            type: 'bar',
+            data: {
+                labels: trendLabels,
+                datasets: [{
+                    label: 'Confidence %',
+                    data: trendData,
+                    backgroundColor: (ctx) => {
+                        const value = ctx.raw;
+                        return value >= 70 ? '#10B981' : (value >= 50 ? '#F59E0B' : '#EF4444');
+                    },
+                    borderRadius: 8
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: 'Confidence (%)' } } }
             }
-        }, 20);
-    }
-    animateCounter('totalChecks', total);
-    animateCounter('fakeCount', fakeCount);
-    animateCounter('realCount', realCount);
-    animateCounter('avgConf', Math.round(avgConf), '%');
-
-    function showDetails(newsText, title, result, confidence) {
-        alert(`📰 Title: ${title || 'No title'}\n🔮 Result: ${result}\n📊 Confidence: ${confidence}%\n\n📄 Content:\n${newsText.substring(0, 500)}...`);
+        });
     }
 </script>
 {% endblock %}

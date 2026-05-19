@@ -1,28 +1,29 @@
 """
-Flask Web Application – Bilingual, Both Models Loaded at Startup
+Fake News Detection – Final Production Version
+- Real model confidence (no hardcoded 70%)
+- No duplicate history entries
+- Both models loaded at startup
 """
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
+import re, os, pickle, joblib, nltk, time
+from datetime import datetime, timedelta
+from collections import defaultdict
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
-import re
-import nltk
+from flask_cors import CORS
 from scraper import NewsScraper
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-import os
-from functools import wraps
-from flask_cors import CORS
 
 nltk.download('punkt', quiet=True)
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-strong-secret-key-change-this'
+app.config['SECRET_KEY'] = 'your-secret-key'
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///fake_news.db').replace('postgres://', 'postgresql://', 1)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 CORS(app)
@@ -32,7 +33,7 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 scraper = NewsScraper()
 
-# ------------------------------- DATABASE MODELS ---------------------------------
+# ------------------------------- Database Models -------------------------------
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -42,12 +43,8 @@ class User(UserMixin, db.Model):
     is_admin = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     history = db.relationship('CheckHistory', backref='user', lazy=True)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+    def set_password(self, password): self.password_hash = generate_password_hash(password)
+    def check_password(self, password): return check_password_hash(self.password_hash, password)
 
 class CheckHistory(db.Model):
     __tablename__ = 'check_history'
@@ -68,13 +65,16 @@ class ReportedNews(db.Model):
     status = db.Column(db.String(20), default='pending')
     reported_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# ------------------------------- HELPER FUNCTIONS ---------------------------------
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# ------------------------------- NLP Helpers -------------------------------
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
-custom_stopwords = {'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'}
-stop_words.update(custom_stopwords)
+stop_words.update({'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'})
 
-def preprocess_text(text):
+def preprocess_english(text):
     text = re.sub(r'http\S+|www\S+|https\S+', '', text)
     text = re.sub(r'[^a-zA-Z\s]', '', text)
     text = text.lower()
@@ -84,44 +84,55 @@ def preprocess_text(text):
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(lemmatized)
 
-# ------------------------------- LOAD MODELS AT STARTUP -------------------------------
-import joblib
-print("Loading English model...")
-model_en = joblib.load('models/model.joblib')
-vectorizer_en = joblib.load('models/vectorizer.joblib')
-print("✅ English model loaded")
+# ------------------------------- Model Loading (required for English) -------------------------------
+def load_model_file(path):
+    """Load .joblib first, then .pkl"""
+    joblib_path = path.replace('.pkl', '.joblib')
+    if os.path.exists(joblib_path):
+        return joblib.load(joblib_path)
+    elif os.path.exists(path):
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    else:
+        raise FileNotFoundError(f"Model file not found: {path}")
 
-# Load Hindi model (if available)
+print("Loading English model...")
 try:
-    model_hi = joblib.load('models/hindi_model.joblib')
-    vectorizer_hi = joblib.load('models/hindi_vectorizer.joblib')
-    print("✅ Hindi model loaded")
+    model_en = load_model_file('models/model.pkl')
+    vectorizer_en = load_model_file('models/vectorizer.pkl')
+    print("✅ English model loaded")
 except Exception as e:
-    print(f"⚠️ Hindi model not found: {e}. Hindi will fallback to translation.")
+    print(f"❌ CRITICAL: English model not loaded – {e}")
+    print("Please run train_model.py to generate model files.")
+    exit(1)
+
+print("Loading Hindi model (optional)...")
+try:
+    model_hi = load_model_file('models/hindi_model.pkl')
+    vectorizer_hi = load_model_file('models/hindi_vectorizer.pkl')
+    print("✅ Hindi model loaded")
+except Exception:
     model_hi = None
     vectorizer_hi = None
+    print("⚠️ Hindi model not found – will use translation fallback.")
 
 def predict_english(text):
-    try:
-        processed = preprocess_text(text)
-        X = vectorizer_en.transform([processed])
-        pred = model_en.predict(X)[0]
-        prob = model_en.predict_proba(X)[0]
-        result = 'FAKE' if pred == 1 else 'REAL'
-        conf = max(prob) * 100
-        return result, conf
-    except Exception as e:
-        print(f"English prediction error: {e}")
-        fake_keywords = ['shocking', 'conspiracy', 'exposed', 'you won\'t believe']
-        if any(kw in text.lower() for kw in fake_keywords):
-            return 'FAKE', 75.0
-        return 'REAL', 70.0
+    """Pure model prediction – no fallback."""
+    processed = preprocess_english(text)
+    X = vectorizer_en.transform([processed])
+    pred = model_en.predict(X)[0]
+    prob = model_en.predict_proba(X)[0]
+    result = 'FAKE' if pred == 1 else 'REAL'
+    confidence = max(prob) * 100
+    # Debug: print confidence to terminal
+    print(f"🔮 English prediction: {result} with {confidence:.1f}% confidence")
+    return result, confidence
 
 def predict_hindi(text):
     if model_hi is None or vectorizer_hi is None:
-        # Fallback to translation
         from language_utils import translate_to_english
         translated = translate_to_english(text)
+        print("🔄 Hindi fallback: translation to English")
         return predict_english(translated)
     try:
         from hindi_preprocess import preprocess_hindi
@@ -130,15 +141,34 @@ def predict_hindi(text):
         pred = model_hi.predict(X)[0]
         prob = model_hi.predict_proba(X)[0]
         result = 'FAKE' if pred == 1 else 'REAL'
-        conf = max(prob) * 100
-        return result, conf
+        confidence = max(prob) * 100
+        print(f"🔮 Hindi prediction: {result} with {confidence:.1f}% confidence")
+        return result, confidence
     except Exception as e:
-        print(f"Hindi prediction error: {e}, falling back to translation")
+        print(f"Hindi model error: {e}, falling back to translation")
         from language_utils import translate_to_english
         translated = translate_to_english(text)
         return predict_english(translated)
 
-# ------------------------------- ROUTES ---------------------------------
+# ------------------------------- Duplicate Prevention -------------------------------
+_recent = defaultdict(float)
+
+def is_duplicate(key, seconds=5):
+    now = time.time()
+    if key in _recent and now - _recent[key] < seconds:
+        return True
+    _recent[key] = now
+    return False
+
+# ------------------------------- Template filter -------------------------------
+@app.template_filter('to_ist')
+def to_ist_filter(utc_dt):
+    if utc_dt is None:
+        return ''
+    ist_dt = utc_dt + timedelta(hours=5, minutes=30)
+    return ist_dt.strftime('%b %d, %Y %I:%M %p')
+
+# ------------------------------- Routes -------------------------------
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -152,43 +182,53 @@ def predict():
         if len(text) < 20:
             return jsonify({'error': 'Minimum 20 characters required'}), 400
 
-        if language == 'hi':
-            result, conf = predict_hindi(text)
-        elif language == 'en':
-            result, conf = predict_english(text)
-        else:  # auto-detect
-            from language_utils import detect_language
-            lang = detect_language(text)
-            if lang == 'hi':
-                result, conf = predict_hindi(text)
-            else:
-                result, conf = predict_english(text)
+        # In‑memory duplicate check
+        cache_key = f"u{current_user.id if current_user.is_authenticated else 0}_t{hash(text[:200])}"
+        if is_duplicate(cache_key):
+            return jsonify({'error': 'Duplicate request ignored'}), 429
 
-        # Save history (deduplication within 2 seconds)
+        # Predict
+        if language == 'hi':
+            result, confidence = predict_hindi(text)
+        elif language == 'en':
+            result, confidence = predict_english(text)
+        else:
+            from language_utils import detect_language
+            if detect_language(text) == 'hi':
+                result, confidence = predict_hindi(text)
+            else:
+                result, confidence = predict_english(text)
+
+        # Database duplicate check (last 60 seconds)
         if current_user.is_authenticated:
-            last = CheckHistory.query.filter_by(
-                user_id=current_user.id,
-                news_text=text[:500]
-            ).order_by(CheckHistory.checked_at.desc()).first()
-            if not (last and (datetime.utcnow() - last.checked_at).total_seconds() < 2):
+            recent = CheckHistory.query.filter(
+                CheckHistory.user_id == current_user.id,
+                CheckHistory.news_text == text[:1000],
+                CheckHistory.checked_at > datetime.utcnow() - timedelta(seconds=60)
+            ).first()
+            if not recent:
                 entry = CheckHistory(
                     user_id=current_user.id,
                     title=None,
                     news_text=text[:1000],
                     result=result,
-                    confidence=conf
+                    confidence=confidence
                 )
                 db.session.add(entry)
                 db.session.commit()
+                print("✅ History saved (predict)")
+            else:
+                print("⏱️ Duplicate prediction ignored (database)")
 
         return jsonify({
             'result': result,
-            'confidence': round(conf, 1),
+            'confidence': round(confidence, 1),
             'word_count': len(text.split()),
             'reading_time': max(1, len(text.split()) // 200)
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Predict error: {e}")
+        return jsonify({'error': 'Server error'}), 500
 
 @app.route('/scrape', methods=['POST'])
 def scrape():
@@ -199,46 +239,54 @@ def scrape():
         if not url:
             return jsonify({'error': 'URL required'}), 400
 
+        cache_key = f"u{current_user.id if current_user.is_authenticated else 0}_u{url}"
+        if is_duplicate(cache_key):
+            return jsonify({'error': 'Duplicate request ignored'}), 429
+
         scraped = scraper.scrape_article(url)
         if not scraped['success']:
             return jsonify({'error': scraped.get('error', 'Scraping failed')}), 400
 
         if language == 'hi':
-            result, conf = predict_hindi(scraped['text'])
+            result, confidence = predict_hindi(scraped['text'])
         elif language == 'en':
-            result, conf = predict_english(scraped['text'])
+            result, confidence = predict_english(scraped['text'])
         else:
             from language_utils import detect_language
-            lang = detect_language(scraped['text'])
-            if lang == 'hi':
-                result, conf = predict_hindi(scraped['text'])
+            if detect_language(scraped['text']) == 'hi':
+                result, confidence = predict_hindi(scraped['text'])
             else:
-                result, conf = predict_english(scraped['text'])
+                result, confidence = predict_english(scraped['text'])
 
         if current_user.is_authenticated:
-            last = CheckHistory.query.filter_by(
-                user_id=current_user.id,
-                news_text=scraped['text'][:500]
-            ).order_by(CheckHistory.checked_at.desc()).first()
-            if not (last and (datetime.utcnow() - last.checked_at).total_seconds() < 2):
+            recent = CheckHistory.query.filter(
+                CheckHistory.user_id == current_user.id,
+                CheckHistory.news_text.like(f'%{url}%'),
+                CheckHistory.checked_at > datetime.utcnow() - timedelta(seconds=60)
+            ).first()
+            if not recent:
                 entry = CheckHistory(
                     user_id=current_user.id,
                     title=scraped.get('title', '')[:200],
                     news_text=scraped['text'][:1000],
                     result=result,
-                    confidence=conf
+                    confidence=confidence
                 )
                 db.session.add(entry)
                 db.session.commit()
+                print("✅ History saved (scrape)")
+            else:
+                print("⏱️ Duplicate scrape ignored (database)")
 
         scraped['prediction'] = result
-        scraped['confidence'] = round(conf, 1)
+        scraped['confidence'] = round(confidence, 1)
         scraped['word_count'] = len(scraped['text'].split())
         return jsonify(scraped)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Scrape error: {e}")
+        return jsonify({'error': 'Server error'}), 500
 
-# ===== AUTHENTICATION ROUTES (unchanged) =====
+# ------------------------------- Authentication routes (keep your templates) -------------------------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -247,7 +295,7 @@ def login():
         user = User.query.filter_by(username=request.form.get('username')).first()
         if user and user.check_password(request.form.get('password')):
             login_user(user, remember=request.form.get('remember', False))
-            flash(f'Welcome back, {user.username}!', 'success')
+            flash(f'Welcome back!', 'success')
             return redirect(url_for('dashboard'))
         flash('Invalid username or password', 'danger')
     return render_template('login.html')
@@ -295,7 +343,11 @@ def dashboard():
     real = total - fake
     avg_conf = sum(h.confidence for h in history) / total if total else 0
     stats = {'total_checks': total, 'fake_count': fake, 'real_count': real, 'avg_confidence': avg_conf}
-    return render_template('dashboard.html', history=history, stats=stats)
+    last_10 = history[:10][::-1]
+    trend_labels = [h.checked_at.strftime('%b %d') for h in last_10]
+    trend_data = [round(h.confidence, 1) for h in last_10]
+    return render_template('dashboard.html', history=history, stats=stats,
+                           trend_labels=trend_labels, trend_data=trend_data)
 
 @app.route('/admin')
 @login_required
@@ -333,24 +385,25 @@ def report_news():
 def api_stats():
     return jsonify({
         'english_model_loaded': True,
-        'hindi_model_loaded': model_hi is not None
+        'hindi_model_loaded': model_hi is not None,
+        'total_predictions': CheckHistory.query.count()
     })
 
-# ------------------------------- DATABASE INIT -------------------------------
+# ------------------------------- Database initialisation -------------------------------
 with app.app_context():
     db.create_all()
     try:
         db.engine.execute('ALTER TABLE check_history ADD COLUMN title TEXT')
-        print("✅ Added title column")
-    except:
+        print("✅ Added 'title' column")
+    except Exception:
         pass
     if not User.query.filter_by(username='admin').first():
         admin = User(username='admin', email='admin@example.com', is_admin=True)
         admin.set_password('admin123')
         db.session.add(admin)
         db.session.commit()
-        print("✅ Admin created (admin/admin123)")
+        print("✅ Admin user created (admin/admin123)")
 
 if __name__ == '__main__':
-    print("🚀 Starting Flask app...")
+    print("\n🚀 Starting server...")
     app.run(debug=True, host='0.0.0.0', port=5000)
