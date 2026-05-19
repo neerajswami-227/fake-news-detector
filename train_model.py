@@ -14,7 +14,7 @@ import pickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier
-from sklearn.ensemble import RandomForestClassifier
+# from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     confusion_matrix, classification_report, roc_curve, auc
@@ -135,10 +135,7 @@ models = {
         'model': PassiveAggressiveClassifier(random_state=42, max_iter=1000),
         'params': {'C': [0.01, 0.1, 0.5, 1.0], 'loss': ['hinge', 'squared_hinge']}
     },
-    'Random Forest': {
-        'model': RandomForestClassifier(random_state=42, n_jobs=-1),
-        'params': {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_split': [2, 5]}
-    }
+    
 }
 
 # ============================================
