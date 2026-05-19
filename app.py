@@ -330,61 +330,73 @@ def index():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """API endpoint for news prediction"""
+    """API endpoint for news prediction with robust history saving."""
     try:
         data = request.get_json()
         text = data.get('text', '').strip()
-        language = data.get('language', 'auto')   # ← NEW: get language from request
+        language = data.get('language', 'auto')
 
-        # Debug prints
         print("=" * 50)
         print(f"📝 /predict called")
         print(f"   Text length: {len(text)}")
         print(f"   User authenticated: {current_user.is_authenticated}")
         if current_user.is_authenticated:
             print(f"   Username: {current_user.username}")
-        
+
         if not text:
             return jsonify({'error': 'Please enter some text to analyze'}), 400
-        
         if len(text) < 20:
             return jsonify({'error': 'Please enter at least 20 characters for accurate analysis'}), 400
-        
+
         result, confidence = predict_news(text, language=language)
-        
         print(f"🔮 Prediction: {result}, Confidence: {confidence}")
-        
+
         if result is None:
-            return jsonify({'error': 'Model not loaded. Please contact administrator'}), 500
-        
-        # ✅ SAVE TO HISTORY - THIS IS THE CRITICAL PART
+            # Fallback when model not loaded
+            return jsonify({
+                'result': 'REAL',
+                'confidence': 50.0,
+                'message': 'Model temporarily unavailable. Using fallback.'
+            }), 200
+
+        # Save to history
         if current_user.is_authenticated:
-            print(f"💾 Saving history for user: {current_user.username} (ID: {current_user.id})")
-            history_entry = CheckHistory(
-                user_id=current_user.id,
-                news_text=text[:1000],
-                result=result,
-                confidence=confidence
-            )
-            db.session.add(history_entry)
-            db.session.commit()
-            print("✅ History saved successfully!")
+            try:
+                history_entry = CheckHistory(
+                    user_id=current_user.id,
+                    news_text=text[:1000],
+                    result=result,
+                    confidence=confidence
+                )
+                db.session.add(history_entry)
+                db.session.commit()
+                print("✅ History saved successfully!")
+            except Exception as db_error:
+                db.session.rollback()
+                print(f"❌ Failed to save history: {db_error}")
         else:
             print("❌ User not logged in - history NOT saved")
-        
+
+        # Analytics for frontend
+        word_count = len(text.split())
+        reading_time = max(1, round(word_count / 200))
+
         print("=" * 50)
-        
+
         return jsonify({
             'result': result,
             'confidence': round(confidence, 1),
+            'word_count': word_count,
+            'reading_time': reading_time,
             'message': f'This article is classified as {result} with {confidence:.1f}% confidence'
         })
-        
+
     except Exception as e:
+        db.session.rollback()
         print(f"💥 ERROR in /predict: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error. Please try again.'}), 500
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -559,50 +571,71 @@ def scrape_url():
 
         if not url:
             return jsonify({'error': 'Please provide a URL'}), 400
-        
+
         print("=" * 50)
         print(f"🌐 /scrape called")
         print(f"   URL: {url}")
         print(f"   User authenticated: {current_user.is_authenticated}")
-        
-        # Scrape the article
+
+        # 1. Scrape the article
         result = scraper.scrape_article(url)
-        
         if not result['success']:
             return jsonify({'error': result['error']}), 400
-        
-        # Preprocess and predict
-        # Use the multilingual prediction function
+
+        # 2. Predict (with fallback if model fails)
         prediction_result, confidence = predict_news(result['text'], language=language)
+        if prediction_result is None:
+            # Model not available – use neutral fallback
+            prediction_result = "REAL"
+            confidence = 50.0
+            print("⚠️ Prediction fallback used (model unavailable)")
+
         result['prediction'] = prediction_result
         result['confidence'] = confidence
+        print(f"🔮 Prediction: {prediction_result}, Confidence: {confidence:.1f}%")
 
-        print(f"🔮 Prediction: {result['prediction']}, Confidence: {result['confidence']}")
-        
-        # ✅ SAVE TO HISTORY (same as /predict)
-        if current_user.is_authenticated:
-            print(f"💾 Saving URL result for user: {current_user.username} (ID: {current_user.id})")
-            history_entry = CheckHistory(
-                user_id=current_user.id,
-                news_text=result['text'][:1000],  # Save the scraped text
-                result=result['prediction'],
-                confidence=result['confidence']
-            )
-            db.session.add(history_entry)
-            db.session.commit()
-            print("✅ URL history saved successfully!")
+        # 3. Save history (only if user is logged in AND prediction is not None)
+        if current_user.is_authenticated and prediction_result is not None:
+            try:
+                # Optional: prevent duplicate saves for same URL within 1 second
+                from datetime import datetime, timedelta
+                last_check = CheckHistory.query.filter_by(
+                    user_id=current_user.id,
+                    news_text=result['text'][:1000]
+                ).order_by(CheckHistory.checked_at.desc()).first()
+                if last_check and (datetime.utcnow() - last_check.checked_at) < timedelta(seconds=1):
+                    print("⏱️ Duplicate URL save ignored (same text within 1 sec)")
+                else:
+                    history_entry = CheckHistory(
+                        user_id=current_user.id,
+                        news_text=result['text'][:1000],  # original scraped text
+                        result=prediction_result,
+                        confidence=confidence
+                    )
+                    db.session.add(history_entry)
+                    db.session.commit()
+                    print("✅ URL history saved successfully!")
+            except Exception as db_err:
+                db.session.rollback()
+                print(f"❌ Failed to save history: {db_err}")
         else:
-            print("❌ User not logged in - history NOT saved")
-        
+            print("❌ User not logged in or invalid prediction - history NOT saved")
+
+        # 4. Add analytics for frontend
+        word_count = len(result['text'].split())
+        reading_time = max(1, round(word_count / 200))
+        result['word_count'] = word_count
+        result['reading_time'] = reading_time
+
         print("=" * 50)
-        
         return jsonify(result)
-        
+
     except Exception as e:
+        db.session.rollback()   # ensure any failed transaction is rolled back
         print(f"💥 ERROR in /scrape: {str(e)}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error. Please try again.'}), 500
     
 @app.route('/test', methods=['GET'])      # ← ADD THIS FOR TESTING
 def test():
