@@ -1,6 +1,7 @@
 """
 UNIVERSAL NEWS SCRAPER - Works for ANY news website
 Improved: never returns fake sample text; uses real page content or URL as fallback.
+Includes caching and reduced timeout for faster fetching.
 """
 
 import requests
@@ -10,6 +11,8 @@ import random
 from urllib.parse import urlparse
 
 class NewsScraper:
+    _cache = {}   # class-level cache for URL results
+
     def __init__(self):
         # Rotating user agents to avoid blocking
         self.user_agents = [
@@ -50,7 +53,13 @@ class NewsScraper:
         return ''
     
     def scrape_article(self, url):
-        """Universal scraper – never returns fake sample text."""
+        """Universal scraper – never returns fake sample text. Uses cache for speed."""
+        # ----- CACHE CHECK -----
+        if url in self._cache:
+            print(f"📦 Using cached result for {url}")
+            # Return a copy to avoid accidental mutation of cached data
+            return self._cache[url].copy()
+
         result = {
             'success': False,
             'title': '',
@@ -69,7 +78,8 @@ class NewsScraper:
             print(f"📡 Scraping: {url}")
             print(f"📍 Domain: {result['domain']}")
             
-            response = requests.get(url, headers=self.get_headers(), timeout=15)
+            # --- REDUCED TIMEOUT (10 seconds) ---
+            response = requests.get(url, headers=self.get_headers(), timeout=10)
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             
@@ -128,7 +138,6 @@ class NewsScraper:
                 fallback_parts.append(f"Source: {result['domain']} – {url}")
                 result['text'] = ' . '.join(fallback_parts)
                 result['word_count'] = len(result['text'].split())
-                # Keep the title we already have (or make a generic one)
                 result['title'] = result['title'] or "News Article"
             else:
                 result['text'] = full_text
@@ -138,7 +147,6 @@ class NewsScraper:
             print(f"✅ Success! {result['word_count']} words extracted")
             
         except requests.exceptions.Timeout:
-            # Use URL as content
             result['success'] = True
             result['title'] = "Connection Timeout"
             result['text'] = f"Request timed out for {url}. Please try again later."
@@ -159,6 +167,8 @@ class NewsScraper:
             result['word_count'] = len(result['text'].split())
             print(f"⚠️ Exception – returning error message: {str(e)[:50]}")
         
+        # ----- STORE IN CACHE BEFORE RETURNING -----
+        self._cache[url] = result.copy()
         return result
 
 
@@ -172,7 +182,7 @@ if __name__ == "__main__":
     ]
     
     print("=" * 60)
-    print("🧪 TESTING IMPROVED SCRAPER (NO FAKE TEXT)")
+    print("🧪 TESTING IMPROVED SCRAPER (CACHE + TIMEOUT 10s)")
     print("=" * 60)
     
     for url in test_urls:
@@ -187,5 +197,5 @@ if __name__ == "__main__":
             print(f"❌ Failed: {result['error']}")
     
     print("\n" + "=" * 60)
-    print("✅ Improved scraper ready – no more fake sample text!")
+    print("✅ Improved scraper ready – caching & faster timeout enabled!")
     print("=" * 60)
