@@ -21,6 +21,7 @@ from functools import wraps
 from flask_cors import CORS 
 from language_utils import detect_language, translate_to_english
 from hindi_preprocess import preprocess_hindi   # only if you have Hindi preprocessing
+from datetime import datetime, timedelta
 
 import nltk
 
@@ -677,8 +678,6 @@ if __name__ == '__main__':
     print("🚀 FAKE NEWS DETECTION SYSTEM")
     print("=" * 60)
     
-    # Load ML model
-    load_models()
     
     # Create database tables
     create_tables()
