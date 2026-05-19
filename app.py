@@ -1,22 +1,12 @@
-"""
-Fake News Detection System – Final Production Version
-- Works on Render free tier
-- Adds missing 'title' column automatically (SQLAlchemy 2.0 compatible)
-- Confidence from decision_function for PassiveAggressiveClassifier
-- No duplicate history entries
-"""
-
-import re, os, pickle, joblib, nltk, time
+import os, re, time, pickle, joblib, nltk
 from datetime import datetime, timedelta
 from collections import defaultdict
-from math import exp
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from sqlalchemy import inspect, text
-
 from scraper import NewsScraper
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -77,7 +67,7 @@ class ReportedNews(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# ------------------------------- Helper: Add missing column (SQLAlchemy 2.0) -------------------------------
+# ------------------------------- Helper: Add missing column -------------------------------
 def add_column_if_not_exists():
     with app.app_context():
         inspector = inspect(db.engine)
@@ -97,8 +87,8 @@ def add_column_if_not_exists():
 # ------------------------------- NLP Helpers -------------------------------
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
-extra = {'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'}
-stop_words.update(extra)
+custom = {'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'}
+stop_words.update(custom)
 
 def preprocess_english(text):
     text = re.sub(r'http\S+|www\S+|https\S+', '', text)
@@ -110,96 +100,57 @@ def preprocess_english(text):
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(lemmatized)
 
-# ------------------------------- Model Loading -------------------------------
-def load_model_file(path):
-    joblib_path = path.replace('.pkl', '.joblib')
-    if os.path.exists(joblib_path):
-        return joblib.load(joblib_path)
-    elif os.path.exists(path):
-        with open(path, 'rb') as f:
-            return pickle.load(f)
-    else:
-        raise FileNotFoundError(f"Model not found: {path}")
-
-print("Loading English model...")
+# ------------------------------- Load Logistic Regression Model -------------------------------
+print("Loading Logistic Regression model...")
 try:
-    model_en = load_model_file('models/model.pkl')
-    vectorizer_en = load_model_file('models/vectorizer.pkl')
-    print("✅ English model loaded")
+    model = joblib.load('models/model.joblib')
+    vectorizer = joblib.load('models/vectorizer.joblib')
+    print("✅ Logistic Regression model loaded")
 except Exception as e:
-    print(f"❌ CRITICAL: English model not loaded – {e}")
+    print(f"❌ Model load failed: {e}")
     exit(1)
-
-print("Loading Hindi model (optional)...")
-try:
-    model_hi = load_model_file('models/hindi_model.pkl')
-    vectorizer_hi = load_model_file('models/hindi_vectorizer.pkl')
-    print("✅ Hindi model loaded")
-except Exception:
-    model_hi = None
-    vectorizer_hi = None
-    print("⚠️ Hindi model not found – will use translation fallback.")
 
 def predict_english(text):
     processed = preprocess_english(text)
-    X = vectorizer_en.transform([processed])
-    pred = model_en.predict(X)[0]
-
-    if hasattr(model_en, 'predict_proba'):
-        prob = model_en.predict_proba(X)[0]
-        confidence = max(prob) * 100
-    elif hasattr(model_en, 'decision_function'):
-        decision = model_en.decision_function(X)
-        if decision.ndim == 1:
-            decision = decision[0]
-        else:
-            # For binary classifiers, decision may be (n_samples,) or (n_samples,2)
-            # We take the value for the predicted class
-            decision = decision[0][pred] if decision.shape[1] > 1 else decision[0]
-        confidence = (1 / (1 + exp(-decision))) * 100
-    else:
-        confidence = 75.0
-
+    X = vectorizer.transform([processed])
+    pred = model.predict(X)[0]
+    prob = model.predict_proba(X)[0]
     result = 'FAKE' if pred == 1 else 'REAL'
-    print(f"🔮 English: {result} with {confidence:.1f}%")
+    confidence = max(prob) * 100
     return result, confidence
 
+# Hindi support (if models exist, otherwise fallback)
+try:
+    hindi_model = joblib.load('models/hindi_model.joblib')
+    hindi_vectorizer = joblib.load('models/hindi_vectorizer.joblib')
+    print("✅ Hindi model loaded")
+except:
+    hindi_model = None
+    hindi_vectorizer = None
+    print("⚠️ Hindi model not found – will use translation")
+
 def predict_hindi(text):
-    if model_hi is None or vectorizer_hi is None:
+    if hindi_model is None:
         from language_utils import translate_to_english
-        translated = translate_to_english(text)
-        return predict_english(translated)
-    try:
-        from hindi_preprocess import preprocess_hindi
-        processed = preprocess_hindi(text)
-        X = vectorizer_hi.transform([processed])
-        pred = model_hi.predict(X)[0]
+        return predict_english(translate_to_english(text))
+    from hindi_preprocess import preprocess_hindi
+    processed = preprocess_hindi(text)
+    X = hindi_vectorizer.transform([processed])
+    pred = hindi_model.predict(X)[0]
+    prob = hindi_model.predict_proba(X)[0]
+    result = 'FAKE' if pred == 1 else 'REAL'
+    confidence = max(prob) * 100
+    return result, confidence
 
-        if hasattr(model_hi, 'predict_proba'):
-            prob = model_hi.predict_proba(X)[0]
-            confidence = max(prob) * 100
-        elif hasattr(model_hi, 'decision_function'):
-            decision = model_hi.decision_function(X)
-            if decision.ndim == 1:
-                decision = decision[0]
-            else:
-                decision = decision[0][pred] if decision.shape[1] > 1 else decision[0]
-            confidence = (1 / (1 + exp(-decision))) * 100
-        else:
-            confidence = 75.0
-
-        result = 'FAKE' if pred == 1 else 'REAL'
-        print(f"🔮 Hindi: {result} with {confidence:.1f}%")
-        return result, confidence
-    except Exception as e:
-        print(f"Hindi model error: {e}, falling back to translation")
-        from language_utils import translate_to_english
-        translated = translate_to_english(text)
-        return predict_english(translated)
+def predict_auto(text):
+    from language_utils import detect_language
+    if detect_language(text) == 'hi':
+        return predict_hindi(text)
+    else:
+        return predict_english(text)
 
 # ------------------------------- Duplicate Prevention -------------------------------
 _recent = defaultdict(float)
-
 def is_duplicate(key, seconds=5):
     now = time.time()
     if key in _recent and now - _recent[key] < seconds:
@@ -212,8 +163,8 @@ def is_duplicate(key, seconds=5):
 def to_ist_filter(utc_dt):
     if utc_dt is None:
         return ''
-    ist_dt = utc_dt + timedelta(hours=5, minutes=30)
-    return ist_dt.strftime('%b %d, %Y %I:%M %p')
+    ist = utc_dt + timedelta(hours=5, minutes=30)
+    return ist.strftime('%b %d, %Y %I:%M %p')
 
 # ------------------------------- Routes -------------------------------
 @app.route('/')
@@ -227,22 +178,18 @@ def predict():
         text = data.get('text', '').strip()
         language = data.get('language', 'auto')
         if len(text) < 20:
-            return jsonify({'error': 'Minimum 20 characters required'}), 400
+            return jsonify({'error': 'Minimum 20 characters'}), 400
 
         cache_key = f"u{current_user.id if current_user.is_authenticated else 0}_t{hash(text[:200])}"
         if is_duplicate(cache_key):
-            return jsonify({'error': 'Duplicate request ignored'}), 429
+            return jsonify({'error': 'Duplicate request'}), 429
 
         if language == 'hi':
-            result, confidence = predict_hindi(text)
+            result, conf = predict_hindi(text)
         elif language == 'en':
-            result, confidence = predict_english(text)
+            result, conf = predict_english(text)
         else:
-            from language_utils import detect_language
-            if detect_language(text) == 'hi':
-                result, confidence = predict_hindi(text)
-            else:
-                result, confidence = predict_english(text)
+            result, conf = predict_auto(text)
 
         if current_user.is_authenticated:
             recent = CheckHistory.query.filter(
@@ -256,17 +203,17 @@ def predict():
                     title=None,
                     news_text=text[:1000],
                     result=result,
-                    confidence=confidence
+                    confidence=conf
                 )
                 db.session.add(entry)
                 db.session.commit()
                 print("✅ History saved (predict)")
             else:
-                print("⏱️ Duplicate prediction ignored (database)")
+                print("⏱️ Duplicate prediction ignored")
 
         return jsonify({
             'result': result,
-            'confidence': round(confidence, 1),
+            'confidence': round(conf, 1),
             'word_count': len(text.split()),
             'reading_time': max(1, len(text.split()) // 200)
         })
@@ -285,22 +232,23 @@ def scrape():
 
         cache_key = f"u{current_user.id if current_user.is_authenticated else 0}_u{url}"
         if is_duplicate(cache_key):
-            return jsonify({'error': 'Duplicate request ignored'}), 429
+            return jsonify({'error': 'Duplicate request'}), 429
 
         scraped = scraper.scrape_article(url)
         if not scraped['success']:
             return jsonify({'error': scraped.get('error', 'Scraping failed')}), 400
 
         if language == 'hi':
-            result, confidence = predict_hindi(scraped['text'])
+            result, conf = predict_hindi(scraped['text'])
         elif language == 'en':
-            result, confidence = predict_english(scraped['text'])
+            result, conf = predict_english(scraped['text'])
         else:
             from language_utils import detect_language
-            if detect_language(scraped['text']) == 'hi':
-                result, confidence = predict_hindi(scraped['text'])
+            lang = detect_language(scraped['text'])
+            if lang == 'hi':
+                result, conf = predict_hindi(scraped['text'])
             else:
-                result, confidence = predict_english(scraped['text'])
+                result, conf = predict_english(scraped['text'])
 
         if current_user.is_authenticated:
             recent = CheckHistory.query.filter(
@@ -314,34 +262,31 @@ def scrape():
                     title=scraped.get('title', '')[:200],
                     news_text=scraped['text'][:1000],
                     result=result,
-                    confidence=confidence
+                    confidence=conf
                 )
                 db.session.add(entry)
                 db.session.commit()
                 print("✅ History saved (scrape)")
             else:
-                print("⏱️ Duplicate scrape ignored (database)")
+                print("⏱️ Duplicate scrape ignored")
 
         scraped['prediction'] = result
-        scraped['confidence'] = round(confidence, 1)
+        scraped['confidence'] = round(conf, 1)
         scraped['word_count'] = len(scraped['text'].split())
         return jsonify(scraped)
     except Exception as e:
         print(f"Scrape error: {e}")
         return jsonify({'error': 'Server error'}), 500
 
-# ------------------------------- Authentication -------------------------------
+# ------------------------------- Authentication (simplified – keep your templates) -------------------------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        remember = request.form.get('remember', False)
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user, remember=remember)
+        user = User.query.filter_by(username=request.form.get('username')).first()
+        if user and user.check_password(request.form.get('password')):
+            login_user(user, remember=request.form.get('remember', False))
             flash('Welcome back!', 'success')
             return redirect(url_for('dashboard'))
         flash('Invalid username or password', 'danger')
@@ -437,14 +382,14 @@ def report_news():
 def api_stats():
     return jsonify({
         'english_model_loaded': True,
-        'hindi_model_loaded': model_hi is not None,
+        'hindi_model_loaded': hindi_model is not None,
         'total_predictions': CheckHistory.query.count()
     })
 
-# ------------------------------- Initialization -------------------------------
+# ------------------------------- Database Initialization -------------------------------
 with app.app_context():
     db.create_all()
-    add_column_if_not_exists()   # now uses SQLAlchemy 2.0 compliant method
+    add_column_if_not_exists()
     if not User.query.filter_by(username='admin').first():
         admin = User(username='admin', email='admin@example.com', is_admin=True)
         admin.set_password('admin123')
@@ -453,5 +398,5 @@ with app.app_context():
         print("✅ Admin user created (admin/admin123)")
 
 if __name__ == '__main__':
-    print("\n🚀 Starting Fake News Detection System")
+    print("\n🚀 Starting Fake News Detection System (Logistic Regression)")
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -1,88 +1,106 @@
 """
-PHASE 3: Advanced Model Training for Fake News Detection
-Trains on Kaggle Fake/Real News dataset (Fake.csv + True.csv)
-Optimised: max_features=5000, joblib compression, only LR + Passive Aggressive
+Train Logistic Regression Model for Fake News Detection
+Comprehensive training with evaluation, visualizations, and feature importance
 """
 
 import pandas as pd
 import numpy as np
 import joblib
+import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
-import re
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     confusion_matrix, classification_report, roc_curve, auc
 )
-import warnings
-import json
-import os
+import re
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
+import os
+import warnings
+warnings.filterwarnings('ignore')
 
+# Download NLTK data
 nltk.download('punkt', quiet=True)
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
 
-warnings.filterwarnings('ignore')
-np.random.seed(42)
-
 print("=" * 70)
-print("🤖 PHASE 3: ADVANCED MODEL TRAINING (Kaggle Dataset – Optimised, No RF)")
+print("🚀 Training Logistic Regression Model for Fake News Detection")
 print("=" * 70)
 
 # ============================================
-# STEP 1: LOAD AND PREPARE DATA
+# 1. Load and prepare dataset
 # ============================================
-print("\n📂 STEP 1: Loading Kaggle Dataset...")
+print("\n📂 Loading dataset (first 5000 rows each)...")
 fake_df = pd.read_csv('data/Fake.csv', nrows=5000)
 true_df = pd.read_csv('data/True.csv', nrows=5000)
-print(f"   Fake: {len(fake_df):,} | Real: {len(true_df):,}")
+print(f"   Fake articles: {len(fake_df):,}")
+print(f"   Real articles: {len(true_df):,}")
 
 fake_df['label'] = 1
 true_df['label'] = 0
 df = pd.concat([fake_df, true_df], ignore_index=True)
 df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-print(f"   Total: {len(df):,} articles")
+df['full_text'] = df['title'] + " " + df['text']
+print(f"   Total articles: {len(df):,}")
+print(f"   Class distribution: Real={(df['label']==0).sum()}, Fake={(df['label']==1).sum()}")
 
 # ============================================
-# STEP 2: TEXT PREPROCESSING
+# 2. Text preprocessing
 # ============================================
-print("\n🔧 STEP 2: Preprocessing text...")
-df['full_text'] = df['title'] + " " + df['text']
+print("\n🔧 Preprocessing text (cleaning, stopword removal, lemmatization)...")
+
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+# Additional custom stopwords
+extra_stopwords = {'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'}
+stop_words.update(extra_stopwords)
 
 def preprocess_text(text):
-    text = re.sub(r'http\S+|www\S+|https\S+', '', str(text))
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+    # Remove special characters and digits
     text = re.sub(r'[^a-zA-Z\s]', '', text)
+    # Lowercase
     text = text.lower()
+    # Remove extra spaces
     text = re.sub(r'\s+', ' ', text).strip()
-    stop_words = set(stopwords.words('english'))
+    # Tokenize
     tokens = word_tokenize(text)
+    # Remove stopwords and short words
     tokens = [t for t in tokens if t not in stop_words and len(t) > 2]
-    lemmatizer = WordNetLemmatizer()
+    # Lemmatize
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(lemmatized)
 
+print("   Applying preprocessing to all articles...")
 df['processed_text'] = df['full_text'].apply(preprocess_text)
+# Remove empty rows
 df = df[df['processed_text'].str.strip() != ''].reset_index(drop=True)
 print(f"   After preprocessing: {len(df):,} articles")
 
 # ============================================
-# STEP 3: TRAIN-TEST SPLIT
+# 3. Train-test split
 # ============================================
-X = df['processed_text'].values
-y = df['label'].values
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-print(f"   Train: {len(X_train):,} | Test: {len(X_test):,}")
+print("\n✂️ Splitting data into train (80%) and test (20%)...")
+X = df['processed_text']
+y = df['label']
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+print(f"   Training samples: {len(X_train):,}")
+print(f"   Test samples: {len(X_test):,}")
 
 # ============================================
-# STEP 4: TF-IDF VECTORIZATION (max_features=5000)
+# 4. TF-IDF vectorization
 # ============================================
+print("\n📝 Creating TF-IDF features (max_features=5000, ngram_range=(1,2))...")
 vectorizer = TfidfVectorizer(
     max_features=5000,
     ngram_range=(1, 2),
@@ -93,136 +111,196 @@ vectorizer = TfidfVectorizer(
 )
 X_train_tfidf = vectorizer.fit_transform(X_train)
 X_test_tfidf = vectorizer.transform(X_test)
-print(f"   Features: {X_train_tfidf.shape[1]:,}")
+print(f"   Feature matrix shape: {X_train_tfidf.shape}")
+print(f"   Number of features: {X_train_tfidf.shape[1]:,}")
 
 # ============================================
-# STEP 5: MODELS (ONLY LR + PASSIVE AGGRESSIVE)
+# 5. Train Logistic Regression (with optional grid search)
 # ============================================
-models = {
-    'Logistic Regression': {
-        'model': LogisticRegression(random_state=42, max_iter=1000),
-        'params': {'C': [0.1, 0.5, 1.0, 2.0, 5.0], 'solver': ['liblinear', 'lbfgs']}
-    },
-    'Passive Aggressive': {
-        'model': PassiveAggressiveClassifier(random_state=42, max_iter=1000),
-        'params': {'C': [0.01, 0.1, 0.5, 1.0], 'loss': ['hinge', 'squared_hinge']}
-    }
-}
+print("\n🤖 Training Logistic Regression model...")
+# Simple model first
+model = LogisticRegression(C=1.0, solver='liblinear', max_iter=1000, random_state=42)
+model.fit(X_train_tfidf, y_train)
+print("   Model training complete.")
+
+# Optional grid search for hyperparameter tuning (commented out to keep fast, but you can uncomment)
+# print("\n   Performing Grid Search for hyperparameters...")
+# param_grid = {'C': [0.1, 0.5, 1.0, 2.0, 5.0], 'solver': ['liblinear', 'lbfgs']}
+# grid = GridSearchCV(LogisticRegression(max_iter=1000, random_state=42), param_grid, cv=5, scoring='f1')
+# grid.fit(X_train_tfidf, y_train)
+# model = grid.best_estimator_
+# print(f"   Best params: {grid.best_params_}")
 
 # ============================================
-# STEP 6: TRAIN & EVALUATE
+# 6. Evaluation on test set
 # ============================================
-results = []
-best_model = None
-best_score = 0
-best_name = ""
-best_vectorizer = None
+print("\n📊 Evaluating model on test set...")
+y_pred = model.predict(X_test_tfidf)
+y_pred_proba = model.predict_proba(X_test_tfidf)[:, 1]
 
-for name, config in models.items():
-    print(f"\n📌 Training {name}...")
-    gs = GridSearchCV(config['model'], config['params'], cv=5, scoring='f1', n_jobs=-1)
-    gs.fit(X_train_tfidf, y_train)
-    model = gs.best_estimator_
-    y_pred = model.predict(X_test_tfidf)
-    acc = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred)
-    rec = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    print(f"   Params: {gs.best_params_}")
-    print(f"   Acc: {acc:.4f}, Prec: {prec:.4f}, Rec: {rec:.4f}, F1: {f1:.4f}")
-    results.append({'Model': name, 'Accuracy': acc, 'Precision': prec, 'Recall': rec, 'F1-Score': f1})
-    if f1 > best_score:
-        best_score = f1
-        best_model = model
-        best_name = name
-        best_vectorizer = vectorizer
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+roc_auc = auc(roc_curve(y_test, y_pred_proba)[0], roc_curve(y_test, y_pred_proba)[1])
 
-# ============================================
-# STEP 7: RESULTS & CONFUSION MATRIX
-# ============================================
-print("\n" + "="*70)
-print("📊 MODEL COMPARISON")
-print("="*70)
-results_df = pd.DataFrame(results)
-print(results_df.to_string(index=False))
-print(f"\n🏆 BEST MODEL: {best_name} (F1 = {best_score:.4f})")
+print(f"\n   ✅ Accuracy:  {accuracy:.4f}")
+print(f"   ✅ Precision: {precision:.4f}")
+print(f"   ✅ Recall:    {recall:.4f}")
+print(f"   ✅ F1-Score:  {f1:.4f}")
+print(f"   ✅ ROC-AUC:   {roc_auc:.4f}")
 
-y_pred_best = best_model.predict(X_test_tfidf)
-cm = confusion_matrix(y_test, y_pred_best)
+print("\n📋 Detailed Classification Report:")
+print(classification_report(y_test, y_pred, target_names=['REAL', 'FAKE']))
+
+# Confusion matrix
+cm = confusion_matrix(y_test, y_pred)
 tn, fp, fn, tp = cm.ravel()
-print(f"\nConfusion Matrix:\n   REAL   FAKE\nR {cm[0,0]:5d} {cm[0,1]:5d}\nF {cm[1,0]:5d} {cm[1,1]:5d}")
-print(f"TN={tn}, FP={fp}, FN={fn}, TP={tp}")
-print("\nClassification Report:")
-print(classification_report(y_test, y_pred_best, target_names=['REAL', 'FAKE']))
+print(f"\n   Confusion Matrix:")
+print(f"                 Predicted")
+print(f"                 REAL    FAKE")
+print(f"   Actual REAL   {tn:5d}   {fp:5d}")
+print(f"   Actual FAKE   {fn:5d}   {tp:5d}")
 
 # ============================================
-# STEP 8: SAVE MODELS (COMPRESSED .joblib)
+# 7. Feature importance (coefficients)
 # ============================================
+print("\n🔍 Extracting feature importance (top indicators for FAKE and REAL)...")
+feature_names = vectorizer.get_feature_names_out()
+coef = model.coef_[0]
+# Top 20 features for FAKE (positive coefficients)
+top_fake_idx = np.argsort(coef)[-20:][::-1]
+top_fake_features = [(feature_names[i], coef[i]) for i in top_fake_idx]
+# Top 20 features for REAL (negative coefficients)
+top_real_idx = np.argsort(coef)[:20]
+top_real_features = [(feature_names[i], coef[i]) for i in top_real_idx]
+
+print("\n   📌 Top 10 indicators of FAKE news:")
+for i, (word, score) in enumerate(top_fake_features[:10]):
+    print(f"      {i+1}. '{word}' (score: {score:.4f})")
+print("\n   📌 Top 10 indicators of REAL news:")
+for i, (word, score) in enumerate(top_real_features[:10]):
+    print(f"      {i+1}. '{word}' (score: {score:.4f})")
+
+# ============================================
+# 8. Save model and vectorizer
+# ============================================
+print("\n💾 Saving model and vectorizer...")
 os.makedirs('models', exist_ok=True)
-joblib.dump(best_model, 'models/model.joblib', compress=3)
-joblib.dump(best_vectorizer, 'models/vectorizer.joblib', compress=3)
-print("\n✅ Saved compressed models: models/model.joblib, models/vectorizer.joblib")
-
-# Optional .pkl backup
-import pickle
+# Save as compressed joblib (recommended)
+joblib.dump(model, 'models/model.joblib', compress=3)
+joblib.dump(vectorizer, 'models/vectorizer.joblib', compress=3)
+print("   ✅ Saved as .joblib (compressed)")
+# Also save as .pkl for compatibility
 with open('models/model.pkl', 'wb') as f:
-    pickle.dump(best_model, f)
+    pickle.dump(model, f)
 with open('models/vectorizer.pkl', 'wb') as f:
-    pickle.dump(best_vectorizer, f)
-print("✅ Also saved .pkl versions (backup)")
+    pickle.dump(vectorizer, f)
+print("   ✅ Saved as .pkl (backup)")
+
+# Save metrics to CSV
+metrics_df = pd.DataFrame({
+    'Metric': ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'ROC-AUC'],
+    'Score': [accuracy, precision, recall, f1, roc_auc]
+})
+metrics_df.to_csv('models/training_metrics.csv', index=False)
+print("   ✅ Saved metrics to models/training_metrics.csv")
 
 # ============================================
-# STEP 9: VISUALISATIONS (Optional)
+# 9. Create visualizations
 # ============================================
-print("\n📈 Creating visualisations...")
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
-for i, m in enumerate(metrics):
-    axes[0].bar(results_df['Model'], results_df[m], color=['#667eea', '#764ba2'])
-    axes[0].set_ylabel(m)
-axes[0].set_title('Model Comparison')
-sns.heatmap(cm, annot=True, fmt='d', cmap='RdYlGn', xticklabels=['REAL','FAKE'], yticklabels=['REAL','FAKE'], ax=axes[1])
-axes[1].set_title('Confusion Matrix')
+print("\n📈 Creating visualizations...")
+
+# Plot 1: Confusion Matrix Heatmap
+plt.figure(figsize=(6,5))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=['REAL', 'FAKE'], yticklabels=['REAL', 'FAKE'])
+plt.title('Confusion Matrix - Logistic Regression')
+plt.ylabel('Actual')
+plt.xlabel('Predicted')
 plt.tight_layout()
-plt.savefig('models/model_comparison.png', dpi=150)
-print("   Saved: models/model_comparison.png")
+plt.savefig('models/confusion_matrix.png', dpi=150)
+print("   ✅ Saved confusion_matrix.png")
 
-if hasattr(best_model, 'predict_proba'):
-    y_prob = best_model.predict_proba(X_test_tfidf)[:, 1]
-    fpr, tpr, _ = roc_curve(y_test, y_prob)
-    roc_auc = auc(fpr, tpr)
-    plt.figure()
-    plt.plot(fpr, tpr, label=f'ROC (AUC = {roc_auc:.3f})')
-    plt.plot([0,1],[0,1],'k--')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    plt.legend()
-    plt.savefig('models/roc_curve.png', dpi=150)
-    print("   Saved: models/roc_curve.png")
+# Plot 2: ROC Curve
+plt.figure(figsize=(7,6))
+fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend(loc="lower right")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig('models/roc_curve.png', dpi=150)
+print("   ✅ Saved roc_curve.png")
+
+# Plot 3: Feature Importance (Top 20 words for FAKE)
+plt.figure(figsize=(10,6))
+words = [w for w, _ in top_fake_features[:20]]
+scores = [s for _, s in top_fake_features[:20]]
+colors = ['#d62728'] * 20
+plt.barh(words, scores, color=colors)
+plt.xlabel('Coefficient Value')
+plt.title('Top 20 Indicators of FAKE News')
+plt.gca().invert_yaxis()
+plt.tight_layout()
+plt.savefig('models/feature_importance_fake.png', dpi=150)
+print("   ✅ Saved feature_importance_fake.png")
+
+# Plot 4: Feature Importance (Top 20 words for REAL)
+plt.figure(figsize=(10,6))
+words_real = [w for w, _ in top_real_features[:20]]
+scores_real = [s for _, s in top_real_features[:20]]
+colors_real = ['#2ca02c'] * 20
+plt.barh(words_real, scores_real, color=colors_real)
+plt.xlabel('Coefficient Value')
+plt.title('Top 20 Indicators of REAL News')
+plt.gca().invert_yaxis()
+plt.tight_layout()
+plt.savefig('models/feature_importance_real.png', dpi=150)
+print("   ✅ Saved feature_importance_real.png")
 
 # ============================================
-# STEP 10: SAVE METRICS SUMMARY
+# 10. Save summary as JSON
 # ============================================
-metrics_summary = {
-    'best_model': best_name,
-    'accuracy': float(accuracy_score(y_test, y_pred_best)),
-    'precision': float(precision_score(y_test, y_pred_best)),
-    'recall': float(recall_score(y_test, y_pred_best)),
-    'f1_score': float(best_score),
-    'confusion_matrix': cm.tolist(),
+import json
+summary = {
+    'model_type': 'LogisticRegression',
+    'max_features': 5000,
+    'ngram_range': [1,2],
     'training_samples': int(len(X_train)),
     'test_samples': int(len(X_test)),
-    'features_count': int(X_train_tfidf.shape[1])
+    'accuracy': float(accuracy),
+    'precision': float(precision),
+    'recall': float(recall),
+    'f1_score': float(f1),
+    'roc_auc': float(roc_auc),
+    'confusion_matrix': [[int(tn), int(fp)], [int(fn), int(tp)]]
 }
-with open('models/metrics_summary.json', 'w') as f:
-    json.dump(metrics_summary, f, indent=2)
-print("   Saved: models/metrics_summary.json")
+with open('models/training_summary.json', 'w') as f:
+    json.dump(summary, f, indent=2)
+print("   ✅ Saved training_summary.json")
 
-print("\n" + "="*70)
-print("✅ PHASE 3 COMPLETE (Random Forest removed)")
-print("="*70)
-print(f"\n🏆 Best Model: {best_name}")
-print(f"📊 Accuracy: {accuracy_score(y_test, y_pred_best)*100:.2f}%")
-print("📁 Output: models/model.joblib, models/vectorizer.joblib")
-print("="*70)
+# ============================================
+# 11. Final summary
+# ============================================
+print("\n" + "=" * 70)
+print("✅ TRAINING COMPLETE!")
+print("=" * 70)
+print(f"\n🏆 Model: Logistic Regression")
+print(f"📊 Accuracy: {accuracy*100:.2f}%")
+print(f"📊 F1-Score: {f1*100:.2f}%")
+print(f"📊 ROC-AUC: {roc_auc:.3f}")
+print("\n📁 All files saved in 'models/' directory:")
+print("   - model.joblib, vectorizer.joblib (compressed)")
+print("   - model.pkl, vectorizer.pkl (backup)")
+print("   - training_metrics.csv (metrics table)")
+print("   - confusion_matrix.png (heatmap)")
+print("   - roc_curve.png (ROC curve)")
+print("   - feature_importance_fake.png, feature_importance_real.png")
+print("   - training_summary.json (JSON summary)")
+print("\n" + "=" * 70)
