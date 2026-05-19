@@ -1,15 +1,22 @@
 """
-Fake News Detection – Final, with guaranteed column addition
+Fake News Detection System – Final Production Version
+- Works on Render free tier
+- Adds missing 'title' column automatically (SQLAlchemy 2.0 compatible)
+- Confidence from decision_function for PassiveAggressiveClassifier
+- No duplicate history entries
 """
 
 import re, os, pickle, joblib, nltk, time
 from datetime import datetime, timedelta
 from collections import defaultdict
+from math import exp
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
+from sqlalchemy import inspect, text
+
 from scraper import NewsScraper
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -20,7 +27,7 @@ nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///fake_news.db').replace('postgres://', 'postgresql://', 1)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 CORS(app)
@@ -40,8 +47,12 @@ class User(UserMixin, db.Model):
     is_admin = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     history = db.relationship('CheckHistory', backref='user', lazy=True)
-    def set_password(self, password): self.password_hash = generate_password_hash(password)
-    def check_password(self, password): return check_password_hash(self.password_hash, password)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 class CheckHistory(db.Model):
     __tablename__ = 'check_history'
@@ -66,16 +77,16 @@ class ReportedNews(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# ------------------------------- Helper: Add missing column (works 100%) -------------------------------
+# ------------------------------- Helper: Add missing column (SQLAlchemy 2.0) -------------------------------
 def add_column_if_not_exists():
-    """Add 'title' column to check_history if it doesn't exist."""
     with app.app_context():
-        from sqlalchemy import inspect
         inspector = inspect(db.engine)
         if 'check_history' in inspector.get_table_names():
             columns = [c['name'] for c in inspector.get_columns('check_history')]
             if 'title' not in columns:
-                db.engine.execute('ALTER TABLE check_history ADD COLUMN title TEXT')
+                with db.engine.connect() as conn:
+                    conn.execute(text('ALTER TABLE check_history ADD COLUMN title TEXT'))
+                    conn.commit()
                 print("✅ Added 'title' column to check_history")
             else:
                 print("✅ 'title' column already exists")
@@ -86,7 +97,8 @@ def add_column_if_not_exists():
 # ------------------------------- NLP Helpers -------------------------------
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
-stop_words.update({'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'})
+extra = {'said', 'says', 'say', 'told', 'according', 'also', 'would', 'could', 'may'}
+stop_words.update(extra)
 
 def preprocess_english(text):
     text = re.sub(r'http\S+|www\S+|https\S+', '', text)
@@ -107,7 +119,7 @@ def load_model_file(path):
         with open(path, 'rb') as f:
             return pickle.load(f)
     else:
-        raise FileNotFoundError(f"Model file not found: {path}")
+        raise FileNotFoundError(f"Model not found: {path}")
 
 print("Loading English model...")
 try:
@@ -132,26 +144,24 @@ def predict_english(text):
     processed = preprocess_english(text)
     X = vectorizer_en.transform([processed])
     pred = model_en.predict(X)[0]
-    
-    # Compute confidence (works for LogisticRegression and PassiveAggressive)
+
     if hasattr(model_en, 'predict_proba'):
         prob = model_en.predict_proba(X)[0]
         confidence = max(prob) * 100
     elif hasattr(model_en, 'decision_function'):
         decision = model_en.decision_function(X)
-        # For binary classifiers, decision_function returns (n_samples,) or (n_samples, 2)
         if decision.ndim == 1:
             decision = decision[0]
         else:
-            decision = decision[0][1] if decision.shape[1] > 1 else decision[0]
-        # Convert decision to probability using sigmoid
-        from math import exp
+            # For binary classifiers, decision may be (n_samples,) or (n_samples,2)
+            # We take the value for the predicted class
+            decision = decision[0][pred] if decision.shape[1] > 1 else decision[0]
         confidence = (1 / (1 + exp(-decision))) * 100
     else:
-        confidence = 75.0  # fallback
-    
+        confidence = 75.0
+
     result = 'FAKE' if pred == 1 else 'REAL'
-    print(f"🔮 English prediction: {result} with {confidence:.1f}% confidence")
+    print(f"🔮 English: {result} with {confidence:.1f}%")
     return result, confidence
 
 def predict_hindi(text):
@@ -164,6 +174,7 @@ def predict_hindi(text):
         processed = preprocess_hindi(text)
         X = vectorizer_hi.transform([processed])
         pred = model_hi.predict(X)[0]
+
         if hasattr(model_hi, 'predict_proba'):
             prob = model_hi.predict_proba(X)[0]
             confidence = max(prob) * 100
@@ -172,13 +183,13 @@ def predict_hindi(text):
             if decision.ndim == 1:
                 decision = decision[0]
             else:
-                decision = decision[0][1] if decision.shape[1] > 1 else decision[0]
-            from math import exp
+                decision = decision[0][pred] if decision.shape[1] > 1 else decision[0]
             confidence = (1 / (1 + exp(-decision))) * 100
         else:
             confidence = 75.0
+
         result = 'FAKE' if pred == 1 else 'REAL'
-        print(f"🔮 Hindi prediction: {result} with {confidence:.1f}% confidence")
+        print(f"🔮 Hindi: {result} with {confidence:.1f}%")
         return result, confidence
     except Exception as e:
         print(f"Hindi model error: {e}, falling back to translation")
@@ -325,12 +336,15 @@ def login():
     if current_user.is_authenticated:
         return redirect(url_for('index'))
     if request.method == 'POST':
-        user = User.query.filter_by(username=request.form.get('username')).first()
-        if user and user.check_password(request.form.get('password')):
-            login_user(user, remember=request.form.get('remember', False))
+        username = request.form.get('username')
+        password = request.form.get('password')
+        remember = request.form.get('remember', False)
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            login_user(user, remember=remember)
             flash('Welcome back!', 'success')
             return redirect(url_for('dashboard'))
-        flash('Invalid username/password', 'danger')
+        flash('Invalid username or password', 'danger')
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -375,7 +389,12 @@ def dashboard():
     fake = sum(1 for h in history if h.result == 'FAKE')
     real = total - fake
     avg_conf = sum(h.confidence for h in history) / total if total else 0
-    stats = {'total_checks': total, 'fake_count': fake, 'real_count': real, 'avg_confidence': avg_conf}
+    stats = {
+        'total_checks': total,
+        'fake_count': fake,
+        'real_count': real,
+        'avg_confidence': avg_conf
+    }
     last_10 = history[:10][::-1]
     trend_labels = [h.checked_at.strftime('%b %d') for h in last_10]
     trend_data = [round(h.confidence, 1) for h in last_10]
@@ -424,11 +443,8 @@ def api_stats():
 
 # ------------------------------- Initialization -------------------------------
 with app.app_context():
-    # Ensure database tables exist
     db.create_all()
-    # Add 'title' column if missing (permanent fix)
-    add_column_if_not_exists()
-    # Create admin user if missing
+    add_column_if_not_exists()   # now uses SQLAlchemy 2.0 compliant method
     if not User.query.filter_by(username='admin').first():
         admin = User(username='admin', email='admin@example.com', is_admin=True)
         admin.set_password('admin123')
