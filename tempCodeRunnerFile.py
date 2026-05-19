@@ -1,689 +1,343 @@
 """
-PHASE 4: Flask Web Application for Fake News Detection
-Complete working web interface with authentication, history, and admin panel
+PHASE 3: Advanced Model Training for Fake News Detection
+Trains on Kaggle Fake/Real News dataset (Fake.csv + True.csv)
+Optimized: max_features=10000, compressed joblib output
 """
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
-import pickle
+import pandas as pd
+import numpy as np
+import joblib  # ← instead of pickle
+import matplotlib.pyplot as plt
+import seaborn as sns
 import re
+import pickle
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report, roc_curve, auc
+)
+import warnings
+import json
+import os
 import nltk
-from scraper import NewsScraper   # ← ADD THIS LINE
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-import os
-import json
-from functools import wraps
-from flask_cors import CORS 
-from language_utils import detect_language, translate_to_english
-from hindi_preprocess import preprocess_hindi   # only if you have Hindi preprocessing
-from datetime import datetime, timedelta
 
-import nltk
-
-# Download required NLTK data (runs only once on server startup)
+# Download NLTK data
 nltk.download('punkt', quiet=True)
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
-nltk.download('averaged_perceptron_tagger', quiet=True)
+
+warnings.filterwarnings('ignore')
+np.random.seed(42)
+
+print("=" * 70)
+print("🤖 PHASE 3: ADVANCED MODEL TRAINING (Kaggle Dataset - Optimized)")
+print("=" * 70)
 
 # ============================================
-# CONFIGURATION
+# STEP 1: LOAD AND PREPARE DATA (Kaggle)
 # ============================================
+print("\n📂 STEP 1: Loading Kaggle Dataset...")
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
+fake_df = pd.read_csv('data/Fake.csv')
+true_df = pd.read_csv('data/True.csv')
 
-# Database configuration – supports both local SQLite and cloud PostgreSQL
-import os
-if os.environ.get('DATABASE_URL'):
-    # On Render (or any cloud with DATABASE_URL env var): use PostgreSQL
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL').replace('postgres://', 'postgresql://', 1)
-else:
-    # On your local machine: use SQLite
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fake_news.db'
-    
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+print(f"   Fake news articles: {len(fake_df):,}")
+print(f"   Real news articles: {len(true_df):,}")
 
-CORS(app)   # allow all origins for development
+fake_df['label'] = 1
+true_df['label'] = 0
 
-# Initialize scraper
-scraper = NewsScraper()
+df = pd.concat([fake_df, true_df], ignore_index=True)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-# Initialize extensions
-db = SQLAlchemy(app)
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
-login_manager.login_message = 'Please login to access this page'
+print(f"   Total articles: {len(df):,}")
+print(f"   Real news (0): {(df['label']==0).sum():,} ({(df['label']==0).mean()*100:.1f}%)")
+print(f"   Fake news (1): {(df['label']==1).sum():,} ({(df['label']==1).mean()*100:.1f}%)")
 
 # ============================================
-# DATABASE MODELS
+# STEP 2: TEXT PREPROCESSING
 # ============================================
+print("\n🔧 STEP 2: Preprocessing text...")
 
-class User(UserMixin, db.Model):
-    """User model for authentication"""
-    __tablename__ = 'users'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(64), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
-    is_admin = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Relationships
-    history = db.relationship('CheckHistory', backref='user', lazy=True)
-    
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-    
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-    
-    def __repr__(self):
-        return f'<User {self.username}>'
-
-
-class CheckHistory(db.Model):
-    """Stores user's news check history"""
-    __tablename__ = 'check_history'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    news_text = db.Column(db.Text, nullable=False)
-    result = db.Column(db.String(10), nullable=False)
-    confidence = db.Column(db.Float, nullable=False)
-    checked_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'news_text': self.news_text[:200] + '...' if len(self.news_text) > 200 else self.news_text,
-            'result': self.result,
-            'confidence': round(self.confidence, 1),
-            'checked_at': self.checked_at.strftime('%Y-%m-%d %H:%M')
-        }
-
-
-class ReportedNews(db.Model):
-    """Stores user-reported fake news for model retraining"""
-    __tablename__ = 'reported_news'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    news_text = db.Column(db.Text, nullable=False)
-    reason = db.Column(db.String(500))
-    status = db.Column(db.String(20), default='pending')  # pending, reviewed, added_to_training
-    reported_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-# ============================================
-# LOAD ML MODEL AND VECTORIZER
-# ============================================
-
-# Initialize NLP tools
-lemmatizer = WordNetLemmatizer()
-stop_words = set(stopwords.words('english'))
-
-# Custom stopwords for news
-custom_stopwords = {
-    'said', 'says', 'say', 'told', 'according', 'also', 'would',
-    'could', 'may', 'one', 'two', 'three', 'article', 'news', 'report'
-}
-stop_words.update(custom_stopwords)
-
-# Load model and vectorizer
-model = None
-vectorizer = None
-
-def load_models():
-    """Load the trained model and vectorizer with robust error handling"""
-    global model, vectorizer
-    import os
-    import traceback
-
-    model_path = 'models/model.pkl'
-    vectorizer_path = 'models/vectorizer.pkl'
-
-    # Debug: show current directory and list files in 'models/'
-    print(f"Current working directory: {os.getcwd()}")
-    print(f"Contents of 'models/' folder: {os.listdir('models') if os.path.exists('models') else 'models folder not found'}")
-
-    # Check if files exist
-    if not os.path.exists(model_path):
-        print(f"❌ Model file not found at {model_path}")
-        return False
-    if not os.path.exists(vectorizer_path):
-        print(f"❌ Vectorizer file not found at {vectorizer_path}")
-        return False
-
-    # Try to load with pickle
-    try:
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-        with open(vectorizer_path, 'rb') as f:
-            vectorizer = pickle.load(f)
-        print("✅ Model and vectorizer loaded successfully using pickle!")
-        return True
-    except Exception as e:
-        print(f"❌ Pickle loading failed: {e}")
-        print(traceback.format_exc())
-        # Fallback: try using joblib (if available)
-        try:
-            import joblib
-            model = joblib.load(model_path)
-            vectorizer = joblib.load(vectorizer_path)
-            print("✅ Model and vectorizer loaded successfully using joblib!")
-            return True
-        except Exception as e2:
-            print(f"❌ Joblib loading also failed: {e2}")
-            return False
-    
-    # Load Hindi model if available
-hindi_model = None
-hindi_vectorizer = None
-if os.path.exists('models/hindi_model.pkl') and os.path.exists('models/hindi_vectorizer.pkl'):
-    with open('models/hindi_model.pkl', 'rb') as f:
-        hindi_model = pickle.load(f)
-    with open('models/hindi_vectorizer.pkl', 'rb') as f:
-        hindi_vectorizer = pickle.load(f)
-    print("✅ Hindi model loaded")
-else:
-    print("⚠️ Hindi model not found; will fallback to translation")
-
+df['full_text'] = df['title'] + " " + df['text']
 
 def preprocess_text(text):
-    """Preprocess text for prediction"""
-    # Clean text
+    if not isinstance(text, str):
+        text = str(text)
     text = re.sub(r'http\S+|www\S+|https\S+', '', text)
     text = re.sub(r'[^a-zA-Z\s]', '', text)
     text = text.lower()
     text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Tokenize and remove stopwords
+    stop_words = set(stopwords.words('english'))
     tokens = word_tokenize(text)
     tokens = [t for t in tokens if t not in stop_words and len(t) > 2]
-    
-    # Lemmatize
+    lemmatizer = WordNetLemmatizer()
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
-    
     return ' '.join(lemmatized)
 
-def predict_hindi(text):
-    # Option 1: Use dedicated Hindi model if available
-    # Option 2: Translate to English and use English model
-    from language_utils import translate_to_english
-    translated = translate_to_english(text)
-    return predict_news_english(translated)
-
-def predict_news(text, language='auto'):
-    """Multilingual prediction – auto-detects or uses manual language."""
-    from language_utils import detect_language, translate_to_english
-
-    # Helper function to safely call English prediction
-    def safe_predict_english(txt):
-        try:
-            return predict_news_english(txt)
-        except Exception as e:
-            print(f"⚠️ English prediction failed: {e}")
-            return "REAL", 50.0   # fallback
-
-    # Manual override
-    if language == 'hi':
-        if hindi_model is not None and hindi_vectorizer is not None:
-            try:
-                from hindi_preprocess import preprocess_hindi
-                processed = preprocess_hindi(text)
-                vec = hindi_vectorizer.transform([processed])
-                pred = hindi_model.predict(vec)[0]
-                prob = hindi_model.predict_proba(vec)[0]
-                result = 'FAKE' if pred == 1 else 'REAL'
-                confidence = max(prob) * 100
-                print("🇮🇳 Using dedicated Hindi model")
-                return result, confidence
-            except Exception as e:
-                print(f"⚠️ Hindi model error: {e}, falling back to translation")
-        # Fallback: translate to English
-        translated = translate_to_english(text)
-        print("🔄 Translating Hindi to English (fallback)")
-        return safe_predict_english(translated)
-
-    elif language == 'en':
-        return safe_predict_english(text)
-
-    else:  # auto-detect
-        lang = detect_language(text)
-        print(f"🌐 Detected language: {lang}")
-        if lang == 'hi':
-            if hindi_model is not None and hindi_vectorizer is not None:
-                try:
-                    from hindi_preprocess import preprocess_hindi
-                    processed = preprocess_hindi(text)
-                    vec = hindi_vectorizer.transform([processed])
-                    pred = hindi_model.predict(vec)[0]
-                    prob = hindi_model.predict_proba(vec)[0]
-                    result = 'FAKE' if pred == 1 else 'REAL'
-                    confidence = max(prob) * 100
-                    print("🇮🇳 Using dedicated Hindi model")
-                    return result, confidence
-                except Exception as e:
-                    print(f"⚠️ Hindi model error: {e}, falling back to translation")
-            translated = translate_to_english(text)
-            print("🔄 Translating Hindi to English (fallback)")
-            return safe_predict_english(translated)
-        else:
-            return safe_predict_english(text)
-
-def predict_news_english(text):
-    """Original English prediction with fallback"""
-    if model is None or vectorizer is None:
-        print("⚠️ English model not loaded – returning fallback prediction")
-        return "REAL", 50.0
-    try:
-        processed = preprocess_text(text)
-        vec = vectorizer.transform([processed])
-        prediction = model.predict(vec)[0]
-        probability = model.predict_proba(vec)[0]
-        result = 'FAKE' if prediction == 1 else 'REAL'
-        confidence = max(probability) * 100
-        return result, confidence
-    except Exception as e:
-        print(f"⚠️ Prediction error: {e}")
-        return "REAL", 50.0
-
+print("   Applying preprocessing...")
+df['processed_text'] = df['full_text'].apply(preprocess_text)
+df = df[df['processed_text'].str.strip() != ''].reset_index(drop=True)
+print(f"   After preprocessing: {len(df):,} articles")
 
 # ============================================
-# USER LOADER FOR FLASK-LOGIN
+# STEP 3: TRAIN-TEST SPLIT
 # ============================================
+print("\n✂️ STEP 3: Creating Train-Test Split...")
 
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
+X = df['processed_text'].values
+y = df['label'].values
 
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
 
-# ============================================
-# ADMIN REQUIRED DECORATOR
-# ============================================
-
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin:
-            flash('Admin access required', 'danger')
-            return redirect(url_for('index'))
-        return f(*args, **kwargs)
-    return decorated_function
-
+print(f"   Training set: {len(X_train):,} samples")
+print(f"   Test set: {len(X_test):,} samples")
 
 # ============================================
-# ROUTES
+# STEP 4: TF-IDF VECTORIZATION (Reduced features)
 # ============================================
+print("\n📝 STEP 4: Creating TF-IDF Features...")
 
-@app.route('/')
-def index():
-    """Home page with detection interface"""
-    return render_template('index.html')
+vectorizer = TfidfVectorizer(
+    max_features=10000,           # ← REDUCED from 15000 to 10000
+    ngram_range=(1, 2),
+    sublinear_tf=True,
+    min_df=3,
+    max_df=0.85,
+    stop_words='english'
+)
 
+X_train_tfidf = vectorizer.fit_transform(X_train)
+X_test_tfidf = vectorizer.transform(X_test)
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    """API endpoint for news prediction with robust history saving."""
-    try:
-        data = request.get_json()
-        text = data.get('text', '').strip()
-        language = data.get('language', 'auto')
+print(f"   Feature matrix shape: {X_train_tfidf.shape}")
+print(f"   Number of features: {X_train_tfidf.shape[1]:,}")
 
-        print("=" * 50)
-        print(f"📝 /predict called")
-        print(f"   Text length: {len(text)}")
-        print(f"   User authenticated: {current_user.is_authenticated}")
-        if current_user.is_authenticated:
-            print(f"   Username: {current_user.username}")
+# ============================================
+# STEP 5: DEFINE MODELS
+# ============================================
+print("\n🤖 STEP 5: Initializing Models...")
 
-        if not text:
-            return jsonify({'error': 'Please enter some text to analyze'}), 400
-        if len(text) < 20:
-            return jsonify({'error': 'Please enter at least 20 characters for accurate analysis'}), 400
-
-        result, confidence = predict_news(text, language=language)
-        print(f"🔮 Prediction: {result}, Confidence: {confidence}")
-
-        if result is None:
-            # Fallback when model not loaded
-            return jsonify({
-                'result': 'REAL',
-                'confidence': 50.0,
-                'message': 'Model temporarily unavailable. Using fallback.'
-            }), 200
-
-        # Save to history
-        if current_user.is_authenticated:
-            try:
-                history_entry = CheckHistory(
-                    user_id=current_user.id,
-                    news_text=text[:1000],
-                    result=result,
-                    confidence=confidence
-                )
-                db.session.add(history_entry)
-                db.session.commit()
-                print("✅ History saved successfully!")
-            except Exception as db_error:
-                db.session.rollback()
-                print(f"❌ Failed to save history: {db_error}")
-        else:
-            print("❌ User not logged in - history NOT saved")
-
-        # Analytics for frontend
-        word_count = len(text.split())
-        reading_time = max(1, round(word_count / 200))
-
-        print("=" * 50)
-
-        return jsonify({
-            'result': result,
-            'confidence': round(confidence, 1),
-            'word_count': word_count,
-            'reading_time': reading_time,
-            'message': f'This article is classified as {result} with {confidence:.1f}% confidence'
-        })
-
-    except Exception as e:
-        db.session.rollback()
-        print(f"💥 ERROR in /predict: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Internal server error. Please try again.'}), 500
-
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    """User login page"""
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        remember = request.form.get('remember', False)
-        
-        user = User.query.filter_by(username=username).first()
-        
-        if user and user.check_password(password):
-            login_user(user, remember=remember)
-            flash(f'Welcome back, {username}!', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Invalid username or password', 'danger')
-    
-    return render_template('login.html')
-
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    """User registration page"""
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        
-        # Validation
-        if password != confirm_password:
-            flash('Passwords do not match', 'danger')
-            return redirect(url_for('register'))
-        
-        if User.query.filter_by(username=username).first():
-            flash('Username already exists', 'danger')
-            return redirect(url_for('register'))
-        
-        if User.query.filter_by(email=email).first():
-            flash('Email already registered', 'danger')
-            return redirect(url_for('register'))
-        
-        if len(password) < 6:
-            flash('Password must be at least 6 characters', 'danger')
-            return redirect(url_for('register'))
-        
-        # Create new user
-        user = User(username=username, email=email)
-        user.set_password(password)
-        db.session.add(user)
-        db.session.commit()
-        
-        flash('Registration successful! Please login.', 'success')
-        return redirect(url_for('login'))
-    
-    return render_template('register.html')
-
-
-@app.route('/logout')
-@login_required
-def logout():
-    """User logout"""
-    logout_user()
-    flash('You have been logged out', 'info')
-    return redirect(url_for('index'))
-
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    """User dashboard with check history"""
-    # FIXED: correct ordering and .all()
-    history = CheckHistory.query.filter_by(user_id=current_user.id)\
-        .order_by(CheckHistory.checked_at.desc())\
-        .limit(50)\
-        .all()
-    
-    # Calculate stats
-    total_checks = len(history)
-    fake_count = sum(1 for h in history if h.result == 'FAKE')
-    real_count = total_checks - fake_count
-    avg_confidence = sum(h.confidence for h in history) / total_checks if total_checks > 0 else 0
-    
-    stats = {
-        'total_checks': total_checks,
-        'fake_count': fake_count,
-        'real_count': real_count,
-        'avg_confidence': avg_confidence
+models = {
+    'Logistic Regression': {
+        'model': LogisticRegression(random_state=42, max_iter=1000),
+        'params': {'C': [0.1, 0.5, 1.0, 2.0, 5.0], 'solver': ['liblinear', 'lbfgs']}
+    },
+    'Passive Aggressive': {
+        'model': PassiveAggressiveClassifier(random_state=42, max_iter=1000),
+        'params': {'C': [0.01, 0.1, 0.5, 1.0], 'loss': ['hinge', 'squared_hinge']}
+    },
+    'Random Forest': {
+        'model': RandomForestClassifier(random_state=42, n_jobs=-1),
+        'params': {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_split': [2, 5]}
     }
+}
+
+# ============================================
+# STEP 6: TRAIN AND EVALUATE MODELS
+# ============================================
+print("\n🏋️ STEP 6: Training and Evaluating Models...")
+print("-" * 70)
+
+results = []
+best_model = None
+best_score = 0
+best_name = ""
+best_vectorizer = None
+
+for name, config in models.items():
+    print(f"\n📌 Training {name}...")
+    grid_search = GridSearchCV(config['model'], config['params'], cv=5, scoring='f1', n_jobs=-1, verbose=0)
+    grid_search.fit(X_train_tfidf, y_train)
+    model = grid_search.best_estimator_
+    y_pred = model.predict(X_test_tfidf)
     
-    return render_template('dashboard.html', history=history, stats=stats)
-
-
-@app.route('/report', methods=['POST'])
-@login_required
-def report_news():
-    """Report fake news for model improvement"""
-    try:
-        data = request.get_json()
-        news_text = data.get('text', '')
-        reason = data.get('reason', '')
-        
-        report = ReportedNews(
-            user_id=current_user.id,
-            news_text=news_text[:2000],
-            reason=reason[:500] if reason else None
-        )
-        db.session.add(report)
-        db.session.commit()
-        
-        return jsonify({'success': True, 'message': 'Thank you for reporting!'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/admin')
-@login_required
-@admin_required
-def admin_panel():
-    """Admin dashboard"""
-    stats = {
-        'total_users': User.query.count(),
-        'total_checks': CheckHistory.query.count(),
-        'total_reports': ReportedNews.query.count(),
-        'pending_reports': ReportedNews.query.filter_by(status='pending').count()
-    }
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
     
-    recent_checks = CheckHistory.query.order_by(CheckHistory.checked_at.desc()).limit(20).all()
-    pending_reports = ReportedNews.query.filter_by(status='pending').limit(20).all()
+    print(f"   Best params: {grid_search.best_params_}")
+    print(f"   Accuracy: {accuracy:.4f}")
+    print(f"   Precision: {precision:.4f}")
+    print(f"   Recall: {recall:.4f}")
+    print(f"   F1-Score: {f1:.4f}")
     
-    return render_template('admin.html', stats=stats, recent_checks=recent_checks, pending_reports=pending_reports)
-
-
-@app.route('/admin/user/<int:user_id>/toggle_admin', methods=['POST'])
-@login_required
-@admin_required
-def toggle_admin(user_id):
-    """Toggle admin status for a user"""
-    user = User.query.get_or_404(user_id)
-    if user.id == current_user.id:
-        return jsonify({'error': 'Cannot change your own admin status'}), 400
-    
-    user.is_admin = not user.is_admin
-    db.session.commit()
-    return jsonify({'success': True, 'is_admin': user.is_admin})
-
-
-@app.route('/api/stats')
-def api_stats():
-    """Public API endpoint for system stats"""
-    return jsonify({
-        'model_loaded': model is not None,
-        'total_predictions': CheckHistory.query.count(),
-        'model_accuracy': 93.7  # From training results
+    results.append({
+        'Model': name,
+        'Accuracy': accuracy,
+        'Precision': precision,
+        'Recall': recall,
+        'F1-Score': f1,
+        'Best Params': str(grid_search.best_params_)
     })
-
-@app.route('/scrape', methods=['POST'])
-def scrape_url():
-    """API endpoint to scrape news from URL and save to history"""
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        language = data.get('language', 'auto')
-
-        if not url:
-            return jsonify({'error': 'Please provide a URL'}), 400
-
-        print("=" * 50)
-        print(f"🌐 /scrape called")
-        print(f"   URL: {url}")
-        print(f"   User authenticated: {current_user.is_authenticated}")
-
-        # 1. Scrape the article
-        result = scraper.scrape_article(url)
-        if not result['success']:
-            return jsonify({'error': result['error']}), 400
-
-        # 2. Predict (with fallback if model fails)
-        prediction_result, confidence = predict_news(result['text'], language=language)
-        if prediction_result is None:
-            # Model not available – use neutral fallback
-            prediction_result = "REAL"
-            confidence = 50.0
-            print("⚠️ Prediction fallback used (model unavailable)")
-
-        result['prediction'] = prediction_result
-        result['confidence'] = confidence
-        print(f"🔮 Prediction: {prediction_result}, Confidence: {confidence:.1f}%")
-
-        # 3. Save history (only if user is logged in AND prediction is not None)
-        if current_user.is_authenticated and prediction_result is not None:
-            try:
-                # Optional: prevent duplicate saves for same URL within 1 second
-                from datetime import datetime, timedelta
-                last_check = CheckHistory.query.filter_by(
-                    user_id=current_user.id,
-                    news_text=result['text'][:1000]
-                ).order_by(CheckHistory.checked_at.desc()).first()
-                if last_check and (datetime.utcnow() - last_check.checked_at) < timedelta(seconds=1):
-                    print("⏱️ Duplicate URL save ignored (same text within 1 sec)")
-                else:
-                    history_entry = CheckHistory(
-                        user_id=current_user.id,
-                        news_text=result['text'][:1000],  # original scraped text
-                        result=prediction_result,
-                        confidence=confidence
-                    )
-                    db.session.add(history_entry)
-                    db.session.commit()
-                    print("✅ URL history saved successfully!")
-            except Exception as db_err:
-                db.session.rollback()
-                print(f"❌ Failed to save history: {db_err}")
-        else:
-            print("❌ User not logged in or invalid prediction - history NOT saved")
-
-        # 4. Add analytics for frontend
-        word_count = len(result['text'].split())
-        reading_time = max(1, round(word_count / 200))
-        result['word_count'] = word_count
-        result['reading_time'] = reading_time
-
-        print("=" * 50)
-        return jsonify(result)
-
-    except Exception as e:
-        db.session.rollback()   # ensure any failed transaction is rolled back
-        print(f"💥 ERROR in /scrape: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': 'Internal server error. Please try again.'}), 500
     
-@app.route('/test', methods=['GET'])      # ← ADD THIS FOR TESTING
-def test():
-        return jsonify({'status': 'ok', 'message': 'Server is running'})
-
-load_models()
-
+    if f1 > best_score:
+        best_score = f1
+        best_model = model
+        best_name = name
+        best_vectorizer = vectorizer
 
 # ============================================
-# CREATE DATABASE TABLES
+# STEP 7: RESULTS SUMMARY
 # ============================================
+print("\n" + "=" * 70)
+print("📊 STEP 7: MODEL COMPARISON SUMMARY")
+print("=" * 70)
 
-def create_tables():
-    """Create all database tables"""
-    with app.app_context():
-        db.create_all()
-        print("✅ Database tables created")
-        
-        # Create admin user if not exists
-        admin_user = User.query.filter_by(username='admin').first()
-        if not admin_user:
-            admin = User(
-                username='admin',
-                email='admin@fakenewsdetector.com',
-                is_admin=True
-            )
-            admin.set_password('admin123')
-            db.session.add(admin)
-            db.session.commit()
-            print("✅ Admin user created (username: admin, password: admin123)")
-
+results_df = pd.DataFrame(results)
+print(results_df.to_string(index=False))
+print(f"\n🏆 BEST MODEL: {best_name} with F1-Score: {best_score:.4f}")
 
 # ============================================
-# MAIN ENTRY POINT
+# STEP 8: CONFUSION MATRIX & REPORT
 # ============================================
+y_pred_best = best_model.predict(X_test_tfidf)
+cm = confusion_matrix(y_test, y_pred_best)
 
-if __name__ == '__main__':
-    print("=" * 60)
-    print("🚀 FAKE NEWS DETECTION SYSTEM")
-    print("=" * 60)
-    
-    
-    # Create database tables
-    create_tables()
-    
-    print("\n📍 Server running at: http://127.0.0.1:5000")
-    print("📍 Admin login: admin / admin123")
-    print("\n" + "=" * 60)
-    
-    app.run(debug=True, host='127.0.0.1', port=5000)
+print(f"\n   Confusion Matrix:")
+print(f"                 Predicted")
+print(f"                 REAL    FAKE")
+print(f"   Actual REAL   {cm[0,0]:5d}   {cm[0,1]:5d}")
+print(f"   Actual FAKE   {cm[1,0]:5d}   {cm[1,1]:5d}")
+
+tn, fp, fn, tp = cm.ravel()
+print(f"\n   Detailed Metrics:")
+print(f"   True Negatives (correct REAL): {tn}")
+print(f"   False Positives (REAL marked FAKE): {fp}")
+print(f"   False Negatives (FAKE marked REAL): {fn}")
+print(f"   True Positives (correct FAKE): {tp}")
+
+print("\n📋 Detailed Classification Report:")
+print(classification_report(y_test, y_pred_best, target_names=['REAL', 'FAKE']))
+
+# ============================================
+# STEP 9: SAVE MODEL AND VECTORIZER (Compressed joblib)
+# ============================================
+print("\n💾 STEP 9: Saving Model and Vectorizer (compressed joblib)...")
+
+os.makedirs('models', exist_ok=True)
+
+# Save best model with compression level 3
+joblib.dump(best_model, 'models/model.joblib', compress=3)
+print(f"   ✅ Model saved to: models/model.joblib (compressed)")
+
+# Save vectorizer with compression
+joblib.dump(best_vectorizer, 'models/vectorizer.joblib', compress=3)
+print(f"   ✅ Vectorizer saved to: models/vectorizer.joblib (compressed)")
+
+# For backward compatibility, also save as .pkl if you want (optional)
+with open('models/model.pkl', 'wb') as f:
+    pickle.dump(best_model, f)
+with open('models/vectorizer.pkl', 'wb') as f:
+    pickle.dump(best_vectorizer, f)
+print(f"   ✅ Also saved .pkl versions for compatibility")
+
+results_df.to_csv('models/training_results.csv', index=False)
+print(f"   ✅ Results saved to: models/training_results.csv")
+
+# ============================================
+# STEP 10: CREATE VISUALIZATIONS
+# ============================================
+print("\n📈 STEP 10: Creating Visualizations...")
+
+fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+metrics_list = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+for idx, metric in enumerate(metrics_list):
+    ax = axes[idx // 2, idx % 2]
+    bars = ax.bar(results_df['Model'], results_df[metric], color=['#667eea', '#764ba2', '#f093fb'])
+    ax.set_ylabel(metric)
+    ax.set_title(f'{metric} Comparison')
+    ax.set_ylim(0, 1)
+    for bar, val in zip(bars, results_df[metric]):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, f'{val:.3f}', ha='center', va='bottom', fontsize=10)
+plt.tight_layout()
+plt.savefig('models/model_comparison.png', dpi=150, bbox_inches='tight')
+print("   ✅ Saved: models/model_comparison.png")
+
+fig2, ax2 = plt.subplots(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='RdYlGn', xticklabels=['REAL', 'FAKE'], yticklabels=['REAL', 'FAKE'], ax=ax2)
+ax2.set_xlabel('Predicted')
+ax2.set_ylabel('Actual')
+ax2.set_title(f'Confusion Matrix - {best_name}')
+plt.tight_layout()
+plt.savefig('models/confusion_matrix.png', dpi=150, bbox_inches='tight')
+print("   ✅ Saved: models/confusion_matrix.png")
+
+if hasattr(best_model, 'predict_proba'):
+    fig3, ax3 = plt.subplots(figsize=(8, 6))
+    y_pred_proba = best_model.predict_proba(X_test_tfidf)[:, 1]
+    fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+    roc_auc = auc(fpr, tpr)
+    ax3.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+    ax3.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    ax3.set_xlim([0.0, 1.0])
+    ax3.set_ylim([0.0, 1.05])
+    ax3.set_xlabel('False Positive Rate')
+    ax3.set_ylabel('True Positive Rate')
+    ax3.set_title(f'ROC Curve - {best_name}')
+    ax3.legend(loc="lower right")
+    plt.tight_layout()
+    plt.savefig('models/roc_curve.png', dpi=150, bbox_inches='tight')
+    print(f"   ✅ Saved: models/roc_curve.png (AUC = {roc_auc:.3f})")
+
+# ============================================
+# STEP 11: FEATURE IMPORTANCE (if Logistic Regression)
+# ============================================
+if best_name == 'Logistic Regression':
+    print("\n🔍 STEP 11: Analyzing Feature Importance...")
+    feature_names = best_vectorizer.get_feature_names_out()
+    coefficients = best_model.coef_[0]
+    top_fake_idx = np.argsort(coefficients)[-20:][::-1]
+    top_fake_features = [(feature_names[i], coefficients[i]) for i in top_fake_idx]
+    top_real_idx = np.argsort(coefficients)[:20]
+    top_real_features = [(feature_names[i], coefficients[i]) for i in top_real_idx]
+    print("\n   📌 Top 10 indicators of FAKE news:")
+    for i, (feature, coef) in enumerate(top_fake_features[:10]):
+        print(f"      {i+1}. '{feature}' (score: {coef:.4f})")
+    print("\n   📌 Top 10 indicators of REAL news:")
+    for i, (feature, coef) in enumerate(top_real_features[:10]):
+        print(f"      {i+1}. '{feature}' (score: {coef:.4f})")
+    feature_importance_df = pd.DataFrame({'feature': feature_names, 'coefficient': coefficients}).sort_values('coefficient', ascending=False)
+    feature_importance_df.to_csv('models/feature_importance.csv', index=False)
+    print("\n   ✅ Saved: models/feature_importance.csv")
+
+# ============================================
+# STEP 12: SAVE METRICS SUMMARY
+# ============================================
+metrics_summary = {
+    'best_model': best_name,
+    'accuracy': float(accuracy_score(y_test, y_pred_best)),
+    'precision': float(precision_score(y_test, y_pred_best)),
+    'recall': float(recall_score(y_test, y_pred_best)),
+    'f1_score': float(f1_score(y_test, y_pred_best)),
+    'confusion_matrix': cm.tolist(),
+    'training_samples': int(len(X_train)),
+    'test_samples': int(len(X_test)),
+    'features_count': int(X_train_tfidf.shape[1])
+}
+with open('models/metrics_summary.json', 'w') as f:
+    json.dump(metrics_summary, f, indent=2)
+print("   ✅ Saved: models/metrics_summary.json")
+
+# ============================================
+# COMPLETION
+# ============================================
+print("\n" + "=" * 70)
+print("✅ PHASE 3 COMPLETE!")
+print("=" * 70)
+print(f"\n🏆 Best Model: {best_name}")
+print(f"📊 Accuracy: {accuracy_score(y_test, y_pred_best)*100:.2f}%")
+print(f"📊 F1-Score: {f1_score(y_test, y_pred_best)*100:.2f}%")
+print("\n📁 Output files saved in 'models/' directory.")
+print("   - model.joblib, vectorizer.joblib (compressed)")
+print("   - model.pkl, vectorizer.pkl (backup)")
+print("=" * 70)

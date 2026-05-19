@@ -1,20 +1,20 @@
 {
   "best_model": "Random Forest",
-  "accuracy": 0.9977723323680107,
-  "precision": 0.9987198634521015,
-  "recall": 0.9970181043663472,
-  "f1_score": 0.9978682583670859,
+  "accuracy": 0.9981064825128091,
+  "precision": 0.9989334470989761,
+  "recall": 0.997444089456869,
+  "f1_score": 0.9981882127251412,
   "confusion_matrix": [
     [
-      4277,
-      6
+      4278,
+      5
     ],
     [
-      14,
-      4681
+      12,
+      4683
     ]
   ],
   "training_samples": 35911,
   "test_samples": 8978,
-  "features_count": 15000
+  "features_count": 10000
 }

@@ -53,7 +53,7 @@
         transition: height 0.5s;
     }
     .history-table-container {
-        max-height: 500px;
+        max-height: 550px;
         overflow-y: auto;
         border-radius: 20px;
     }
@@ -66,6 +66,17 @@
     .badge-fake { background: #EF4444; color: white; padding: 4px 12px; border-radius: 40px; }
     .badge-real { background: #10B981; color: white; padding: 4px 12px; border-radius: 40px; }
     .progress-custom { height: 8px; background: #E2E8F0; border-radius: 10px; overflow: hidden; }
+    .date-cell {
+        font-size: 0.85rem;
+        line-height: 1.3;
+    }
+    .date-cell .date {
+        font-weight: 500;
+    }
+    .date-cell .time {
+        font-size: 0.75rem;
+        color: #4B5563;
+    }
 </style>
 {% endblock %}
 
@@ -91,12 +102,10 @@
         <div class="col-md-6">
             <div class="stat-card h-100">
                 <h5 class="mb-3"><i class="fas fa-chart-pie me-2"></i>Real vs Fake Ratio</h5>
-                <!-- Canvas for Chart.js donut -->
                 <div class="donut-container">
                     <canvas id="donutChart" width="200" height="200" style="display: block;"></canvas>
                     <div class="donut-label" id="donutTotal">0</div>
                 </div>
-                <!-- Fallback (hidden by default) -->
                 <div id="fallbackDonut" style="display: none; text-align: center;">
                     <div class="fallback-circle" id="fallbackCircle">
                         <div class="fallback-fill" id="fallbackFill" style="height: 0%;"></div>
@@ -128,31 +137,64 @@
         </div>
     </div>
 
-    <!-- History Table (same as before) -->
+    <!-- History Table – Exactly as in the image -->
     <div class="card bg-white bg-opacity-50 backdrop-blur-sm">
         <div class="card-header bg-transparent border-bottom-0">
-            <i class="fas fa-history me-2"></i> Detailed History
+            <i class="fas fa-history me-2"></i> HISTORY – FAKE NEWS DETECTION
             <span class="badge bg-primary ms-2">{{ history|length }} records</span>
         </div>
         <div class="card-body p-0">
             {% if history and history|length > 0 %}
             <div class="history-table-container">
                 <table class="table table-hover mb-0">
-                    <thead>
-                        <tr><th style="min-width: 180px;">Date & Time</th><th>News Snippet</th><th>Result</th><th>Confidence</th></tr>
+                    <thead class="table-light">
+                        <tr>
+                            <th style="min-width: 60px;">ID</th>
+                            <th style="min-width: 150px;">DATE & TIME</th>
+                            <th>NEWS HEADLINE / TITLE</th>
+                            <th style="min-width: 110px;">PREDICTION</th>
+                            <th style="min-width: 100px;">CONFIDENCE (%)</th>
+                            <th style="min-width: 70px;">DETAILS</th>
+                        </tr>
                     </thead>
                     <tbody>
                         {% for check in history %}
                         <tr>
-                            <!-- ✅ IST formatted datetime using the custom filter -->
-                            <td class="text-muted small">{{ check.checked_at|to_ist }}</td>
-                            <td>{{ check.news_text[:100] }}{% if check.news_text|length > 100 %}...{% endif %}</td>
-                            <td><span class="badge-{{ 'fake' if check.result == 'FAKE' else 'real' }}">{{ check.result }}</span></td>
+                            <td class="text-center">{{ loop.index }}</td>
+                            <td class="date-cell">
+                                {% set ist = check.checked_at|to_ist %}
+                                {% set parts = ist.split(' ') if ist else ['', ''] %}
+                                <div class="date">{{ parts[0] }} {{ parts[1] }} {{ parts[2] }}</div>
+                                <div class="time">{{ parts[3] }} {{ parts[4] }}</div>
+                            </td>
+                            <td>
+                                {% if check.title %}
+                                    {{ check.title[:80] }}{% if check.title|length > 80 %}...{% endif %}
+                                {% else %}
+                                    {{ check.news_text[:80] }}{% if check.news_text|length > 80 %}...{% endif %}
+                                {% endif %}
+                            </td>
+                            <td>
+                                <span class="badge-{{ 'fake' if check.result == 'FAKE' else 'real' }}">
+                                    {{ check.result }}
+                                </span>
+                            </td>
                             <td>
                                 <div class="d-flex align-items-center gap-2">
-                                    <div class="progress-custom flex-grow-1"><div class="rounded-pill {% if check.result == 'FAKE' %}bg-danger{% else %}bg-success{% endif %}" style="width: {{ check.confidence }}%; height: 6px;"></div></div>
+                                    <div class="progress-custom flex-grow-1">
+                                        <div class="rounded-pill {% if check.result == 'FAKE' %}bg-danger{% else %}bg-success{% endif %}" style="width: {{ check.confidence }}%; height: 6px;"></div>
+                                    </div>
                                     <span class="small">{{ "%.1f"|format(check.confidence) }}%</span>
                                 </div>
+                            </td>
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-outline-primary detail-btn" 
+                                        data-title="{{ check.title or 'No title' }}"
+                                        data-text="{{ check.news_text|escape }}"
+                                        data-result="{{ check.result }}"
+                                        data-conf="{{ check.confidence }}">
+                                    <i class="fas fa-eye"></i>
+                                </button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -171,6 +213,29 @@
     </div>
 </div>
 
+<!-- Modal for Details -->
+<div class="modal fade" id="detailModal" tabindex="-1" aria-labelledby="detailModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="detailModalLabel">Article Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p><strong>Title:</strong> <span id="modalTitle"></span></p>
+                <p><strong>Result:</strong> <span id="modalResult"></span></p>
+                <p><strong>Confidence:</strong> <span id="modalConf"></span>%</p>
+                <hr>
+                <p><strong>Full Text:</strong></p>
+                <p id="modalText" style="white-space: pre-wrap; max-height: 400px; overflow-y: auto;"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 <script>
     // Data from backend
@@ -179,7 +244,6 @@
     const total = realCount + fakeCount;
     const avgConf = {{ stats.avg_confidence }};
 
-    // Animated counter function
     function animateCounter(elementId, target, suffix='') {
         let current = 0;
         const step = Math.ceil(target / 50);
@@ -206,7 +270,7 @@
     document.getElementById('credibilityProgress').style.width = realPercent + '%';
     document.getElementById('donutTotal').innerText = total;
 
-    // Attempt to draw donut chart using Chart.js
+    // Donut chart
     const ctx = document.getElementById('donutChart').getContext('2d');
     let chart;
     try {
@@ -242,7 +306,6 @@
         fallbackPercent.innerText = Math.round(percentReal);
     }
 
-    // If total is zero, hide canvas and show fallback message in donut area
     if (total === 0) {
         if (chart) chart.destroy();
         document.getElementById('donutChart').style.display = 'none';
@@ -255,5 +318,22 @@
         msg.innerText = 'No data yet. Start checking news!';
         document.getElementById('fallbackDonut').appendChild(msg);
     }
+
+    // Modal handling
+    const detailBtns = document.querySelectorAll('.detail-btn');
+    detailBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const title = btn.getAttribute('data-title');
+            const text = btn.getAttribute('data-text');
+            const result = btn.getAttribute('data-result');
+            const conf = btn.getAttribute('data-conf');
+            document.getElementById('modalTitle').innerText = title || 'No title';
+            document.getElementById('modalText').innerText = text || 'No content';
+            document.getElementById('modalResult').innerHTML = `<span class="badge-${result === 'FAKE' ? 'fake' : 'real'}">${result}</span>`;
+            document.getElementById('modalConf').innerText = parseFloat(conf).toFixed(1);
+            const modal = new bootstrap.Modal(document.getElementById('detailModal'));
+            modal.show();
+        });
+    });
 </script>
 {% endblock %}
