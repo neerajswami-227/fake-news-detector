@@ -1,5 +1,5 @@
 """
-Fake News Detection – Final (Auto‑fix missing column, works with any classifier)
+Fake News Detection – Final, with guaranteed column addition
 """
 
 import re, os, pickle, joblib, nltk, time
@@ -47,7 +47,7 @@ class CheckHistory(db.Model):
     __tablename__ = 'check_history'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    title = db.Column(db.String(500))   # will be added automatically if missing
+    title = db.Column(db.String(500))
     news_text = db.Column(db.Text, nullable=False)
     result = db.Column(db.String(10), nullable=False)
     confidence = db.Column(db.Float, nullable=False)
@@ -66,30 +66,22 @@ class ReportedNews(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# ------------------------------- Helper: Add missing column -------------------------------
-def add_column_if_not_exists(table, column, col_type):
-    """Add a column to the table if it doesn't exist (SQLite + PostgreSQL)."""
+# ------------------------------- Helper: Add missing column (works 100%) -------------------------------
+def add_column_if_not_exists():
+    """Add 'title' column to check_history if it doesn't exist."""
     with app.app_context():
-        try:
-            # Check if column exists
-            if 'sqlite' in str(db.engine.url):
-                # SQLite pragma
-                cursor = db.engine.execute(f"PRAGMA table_info({table})")
-                cols = [row[1] for row in cursor]
-                if column not in cols:
-                    db.engine.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-                    print(f"✅ Added column '{column}' to {table}")
+        from sqlalchemy import inspect
+        inspector = inspect(db.engine)
+        if 'check_history' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('check_history')]
+            if 'title' not in columns:
+                db.engine.execute('ALTER TABLE check_history ADD COLUMN title TEXT')
+                print("✅ Added 'title' column to check_history")
             else:
-                # PostgreSQL
-                cursor = db.engine.execute(f"""
-                    SELECT column_name FROM information_schema.columns 
-                    WHERE table_name='{table}' AND column_name='{column}'
-                """)
-                if not cursor.fetchone():
-                    db.engine.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-                    print(f"✅ Added column '{column}' to {table}")
-        except Exception as e:
-            print(f"⚠️ Could not add column {column}: {e}")
+                print("✅ 'title' column already exists")
+        else:
+            db.create_all()
+            print("✅ Tables created")
 
 # ------------------------------- NLP Helpers -------------------------------
 lemmatizer = WordNetLemmatizer()
@@ -108,7 +100,6 @@ def preprocess_english(text):
 
 # ------------------------------- Model Loading -------------------------------
 def load_model_file(path):
-    """Load .joblib first, then .pkl"""
     joblib_path = path.replace('.pkl', '.joblib')
     if os.path.exists(joblib_path):
         return joblib.load(joblib_path)
@@ -138,25 +129,24 @@ except Exception:
     print("⚠️ Hindi model not found – will use translation fallback.")
 
 def predict_english(text):
-    """Works for both LogisticRegression (has predict_proba) and PassiveAggressive (has decision_function)."""
     processed = preprocess_english(text)
     X = vectorizer_en.transform([processed])
     pred = model_en.predict(X)[0]
     
-    # Confidence extraction
+    # Compute confidence (works for LogisticRegression and PassiveAggressive)
     if hasattr(model_en, 'predict_proba'):
         prob = model_en.predict_proba(X)[0]
         confidence = max(prob) * 100
     elif hasattr(model_en, 'decision_function'):
         decision = model_en.decision_function(X)
+        # For binary classifiers, decision_function returns (n_samples,) or (n_samples, 2)
         if decision.ndim == 1:
             decision = decision[0]
         else:
             decision = decision[0][1] if decision.shape[1] > 1 else decision[0]
-        # Map decision value to [0,100] using sigmoid (rough)
+        # Convert decision to probability using sigmoid
         from math import exp
-        sigmoid = 1 / (1 + exp(-decision))
-        confidence = sigmoid * 100
+        confidence = (1 / (1 + exp(-decision))) * 100
     else:
         confidence = 75.0  # fallback
     
@@ -329,7 +319,7 @@ def scrape():
         print(f"Scrape error: {e}")
         return jsonify({'error': 'Server error'}), 500
 
-# ------------------------------- Authentication (keep your templates) -------------------------------
+# ------------------------------- Authentication -------------------------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -432,11 +422,12 @@ def api_stats():
         'total_predictions': CheckHistory.query.count()
     })
 
-# ------------------------------- Database & column fix -------------------------------
+# ------------------------------- Initialization -------------------------------
 with app.app_context():
+    # Ensure database tables exist
     db.create_all()
-    # Ensure 'title' column exists
-    add_column_if_not_exists('check_history', 'title', 'TEXT')
+    # Add 'title' column if missing (permanent fix)
+    add_column_if_not_exists()
     # Create admin user if missing
     if not User.query.filter_by(username='admin').first():
         admin = User(username='admin', email='admin@example.com', is_admin=True)
@@ -446,5 +437,5 @@ with app.app_context():
         print("✅ Admin user created (admin/admin123)")
 
 if __name__ == '__main__':
-    print("\n🚀 Starting server...")
+    print("\n🚀 Starting Fake News Detection System")
     app.run(debug=True, host='0.0.0.0', port=5000)
