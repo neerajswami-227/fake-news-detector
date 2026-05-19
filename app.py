@@ -1,8 +1,5 @@
 """
-Fake News Detection – Final Production Version
-- Real model confidence (no hardcoded 70%)
-- No duplicate history entries
-- Both models loaded at startup
+Fake News Detection – Final (Auto‑fix missing column, works with any classifier)
 """
 
 import re, os, pickle, joblib, nltk, time
@@ -50,7 +47,7 @@ class CheckHistory(db.Model):
     __tablename__ = 'check_history'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    title = db.Column(db.String(500))
+    title = db.Column(db.String(500))   # will be added automatically if missing
     news_text = db.Column(db.Text, nullable=False)
     result = db.Column(db.String(10), nullable=False)
     confidence = db.Column(db.Float, nullable=False)
@@ -69,6 +66,31 @@ class ReportedNews(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+# ------------------------------- Helper: Add missing column -------------------------------
+def add_column_if_not_exists(table, column, col_type):
+    """Add a column to the table if it doesn't exist (SQLite + PostgreSQL)."""
+    with app.app_context():
+        try:
+            # Check if column exists
+            if 'sqlite' in str(db.engine.url):
+                # SQLite pragma
+                cursor = db.engine.execute(f"PRAGMA table_info({table})")
+                cols = [row[1] for row in cursor]
+                if column not in cols:
+                    db.engine.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                    print(f"✅ Added column '{column}' to {table}")
+            else:
+                # PostgreSQL
+                cursor = db.engine.execute(f"""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name='{table}' AND column_name='{column}'
+                """)
+                if not cursor.fetchone():
+                    db.engine.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                    print(f"✅ Added column '{column}' to {table}")
+        except Exception as e:
+            print(f"⚠️ Could not add column {column}: {e}")
+
 # ------------------------------- NLP Helpers -------------------------------
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
@@ -84,7 +106,7 @@ def preprocess_english(text):
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(lemmatized)
 
-# ------------------------------- Model Loading (required for English) -------------------------------
+# ------------------------------- Model Loading -------------------------------
 def load_model_file(path):
     """Load .joblib first, then .pkl"""
     joblib_path = path.replace('.pkl', '.joblib')
@@ -103,7 +125,6 @@ try:
     print("✅ English model loaded")
 except Exception as e:
     print(f"❌ CRITICAL: English model not loaded – {e}")
-    print("Please run train_model.py to generate model files.")
     exit(1)
 
 print("Loading Hindi model (optional)...")
@@ -117,14 +138,29 @@ except Exception:
     print("⚠️ Hindi model not found – will use translation fallback.")
 
 def predict_english(text):
-    """Pure model prediction – no fallback."""
+    """Works for both LogisticRegression (has predict_proba) and PassiveAggressive (has decision_function)."""
     processed = preprocess_english(text)
     X = vectorizer_en.transform([processed])
     pred = model_en.predict(X)[0]
-    prob = model_en.predict_proba(X)[0]
+    
+    # Confidence extraction
+    if hasattr(model_en, 'predict_proba'):
+        prob = model_en.predict_proba(X)[0]
+        confidence = max(prob) * 100
+    elif hasattr(model_en, 'decision_function'):
+        decision = model_en.decision_function(X)
+        if decision.ndim == 1:
+            decision = decision[0]
+        else:
+            decision = decision[0][1] if decision.shape[1] > 1 else decision[0]
+        # Map decision value to [0,100] using sigmoid (rough)
+        from math import exp
+        sigmoid = 1 / (1 + exp(-decision))
+        confidence = sigmoid * 100
+    else:
+        confidence = 75.0  # fallback
+    
     result = 'FAKE' if pred == 1 else 'REAL'
-    confidence = max(prob) * 100
-    # Debug: print confidence to terminal
     print(f"🔮 English prediction: {result} with {confidence:.1f}% confidence")
     return result, confidence
 
@@ -132,16 +168,26 @@ def predict_hindi(text):
     if model_hi is None or vectorizer_hi is None:
         from language_utils import translate_to_english
         translated = translate_to_english(text)
-        print("🔄 Hindi fallback: translation to English")
         return predict_english(translated)
     try:
         from hindi_preprocess import preprocess_hindi
         processed = preprocess_hindi(text)
         X = vectorizer_hi.transform([processed])
         pred = model_hi.predict(X)[0]
-        prob = model_hi.predict_proba(X)[0]
+        if hasattr(model_hi, 'predict_proba'):
+            prob = model_hi.predict_proba(X)[0]
+            confidence = max(prob) * 100
+        elif hasattr(model_hi, 'decision_function'):
+            decision = model_hi.decision_function(X)
+            if decision.ndim == 1:
+                decision = decision[0]
+            else:
+                decision = decision[0][1] if decision.shape[1] > 1 else decision[0]
+            from math import exp
+            confidence = (1 / (1 + exp(-decision))) * 100
+        else:
+            confidence = 75.0
         result = 'FAKE' if pred == 1 else 'REAL'
-        confidence = max(prob) * 100
         print(f"🔮 Hindi prediction: {result} with {confidence:.1f}% confidence")
         return result, confidence
     except Exception as e:
@@ -182,12 +228,10 @@ def predict():
         if len(text) < 20:
             return jsonify({'error': 'Minimum 20 characters required'}), 400
 
-        # In‑memory duplicate check
         cache_key = f"u{current_user.id if current_user.is_authenticated else 0}_t{hash(text[:200])}"
         if is_duplicate(cache_key):
             return jsonify({'error': 'Duplicate request ignored'}), 429
 
-        # Predict
         if language == 'hi':
             result, confidence = predict_hindi(text)
         elif language == 'en':
@@ -199,7 +243,6 @@ def predict():
             else:
                 result, confidence = predict_english(text)
 
-        # Database duplicate check (last 60 seconds)
         if current_user.is_authenticated:
             recent = CheckHistory.query.filter(
                 CheckHistory.user_id == current_user.id,
@@ -286,7 +329,7 @@ def scrape():
         print(f"Scrape error: {e}")
         return jsonify({'error': 'Server error'}), 500
 
-# ------------------------------- Authentication routes (keep your templates) -------------------------------
+# ------------------------------- Authentication (keep your templates) -------------------------------
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
@@ -295,9 +338,9 @@ def login():
         user = User.query.filter_by(username=request.form.get('username')).first()
         if user and user.check_password(request.form.get('password')):
             login_user(user, remember=request.form.get('remember', False))
-            flash(f'Welcome back!', 'success')
+            flash('Welcome back!', 'success')
             return redirect(url_for('dashboard'))
-        flash('Invalid username or password', 'danger')
+        flash('Invalid username/password', 'danger')
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -312,17 +355,17 @@ def register():
         if password != confirm:
             flash('Passwords do not match', 'danger')
         elif User.query.filter_by(username=username).first():
-            flash('Username already exists', 'danger')
+            flash('Username exists', 'danger')
         elif User.query.filter_by(email=email).first():
-            flash('Email already registered', 'danger')
+            flash('Email registered', 'danger')
         elif len(password) < 6:
-            flash('Password must be at least 6 characters', 'danger')
+            flash('Password too short', 'danger')
         else:
             user = User(username=username, email=email)
             user.set_password(password)
             db.session.add(user)
             db.session.commit()
-            flash('Registration successful! Please login.', 'success')
+            flash('Registration successful!', 'success')
             return redirect(url_for('login'))
     return render_template('register.html')
 
@@ -353,7 +396,7 @@ def dashboard():
 @login_required
 def admin_panel():
     if not current_user.is_admin:
-        flash('Admin access required', 'danger')
+        flash('Admin only', 'danger')
         return redirect(url_for('index'))
     stats = {
         'total_users': User.query.count(),
@@ -389,14 +432,12 @@ def api_stats():
         'total_predictions': CheckHistory.query.count()
     })
 
-# ------------------------------- Database initialisation -------------------------------
+# ------------------------------- Database & column fix -------------------------------
 with app.app_context():
     db.create_all()
-    try:
-        db.engine.execute('ALTER TABLE check_history ADD COLUMN title TEXT')
-        print("✅ Added 'title' column")
-    except Exception:
-        pass
+    # Ensure 'title' column exists
+    add_column_if_not_exists('check_history', 'title', 'TEXT')
+    # Create admin user if missing
     if not User.query.filter_by(username='admin').first():
         admin = User(username='admin', email='admin@example.com', is_admin=True)
         admin.set_password('admin123')
