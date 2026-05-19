@@ -1,26 +1,24 @@
 """
 PHASE 3: Advanced Model Training for Fake News Detection
 Trains on Kaggle Fake/Real News dataset (Fake.csv + True.csv)
-Includes hyperparameter tuning, cross-validation, and comprehensive evaluation
+Optimized: max_features=10000, compressed joblib output
 """
 
 import pandas as pd
 import numpy as np
-import pickle
+import joblib  # ← instead of pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 import re
+import pickle
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report, roc_curve, auc,
-    precision_recall_curve
+    confusion_matrix, classification_report, roc_curve, auc
 )
-from sklearn.pipeline import Pipeline
 import warnings
 import json
 import os
@@ -29,7 +27,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 
-# Download NLTK data (if not already)
+# Download NLTK data
 nltk.download('punkt', quiet=True)
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
@@ -38,7 +36,7 @@ warnings.filterwarnings('ignore')
 np.random.seed(42)
 
 print("=" * 70)
-print("🤖 PHASE 3: ADVANCED MODEL TRAINING (Kaggle Dataset)")
+print("🤖 PHASE 3: ADVANCED MODEL TRAINING (Kaggle Dataset - Optimized)")
 print("=" * 70)
 
 # ============================================
@@ -46,21 +44,16 @@ print("=" * 70)
 # ============================================
 print("\n📂 STEP 1: Loading Kaggle Dataset...")
 
-# Load the two CSV files
 fake_df = pd.read_csv('data/Fake.csv')
 true_df = pd.read_csv('data/True.csv')
 
 print(f"   Fake news articles: {len(fake_df):,}")
 print(f"   Real news articles: {len(true_df):,}")
 
-# Add label column (1 = Fake, 0 = Real)
 fake_df['label'] = 1
 true_df['label'] = 0
 
-# Combine into one DataFrame
 df = pd.concat([fake_df, true_df], ignore_index=True)
-
-# Shuffle the dataset
 df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
 print(f"   Total articles: {len(df):,}")
@@ -72,36 +65,26 @@ print(f"   Fake news (1): {(df['label']==1).sum():,} ({(df['label']==1).mean()*1
 # ============================================
 print("\n🔧 STEP 2: Preprocessing text...")
 
-# Combine title and text columns
 df['full_text'] = df['title'] + " " + df['text']
 
-# Define the same preprocessing function used in app.py
 def preprocess_text(text):
     if not isinstance(text, str):
         text = str(text)
-    # Remove URLs
     text = re.sub(r'http\S+|www\S+|https\S+', '', text)
-    # Remove special characters
     text = re.sub(r'[^a-zA-Z\s]', '', text)
-    # Lowercase
     text = text.lower()
-    # Remove extra spaces
     text = re.sub(r'\s+', ' ', text).strip()
-    # Tokenize and remove stopwords
     stop_words = set(stopwords.words('english'))
     tokens = word_tokenize(text)
     tokens = [t for t in tokens if t not in stop_words and len(t) > 2]
-    # Lemmatize
     lemmatizer = WordNetLemmatizer()
     lemmatized = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(lemmatized)
 
 print("   Applying preprocessing...")
 df['processed_text'] = df['full_text'].apply(preprocess_text)
-
-# Remove rows where processed_text is empty
 df = df[df['processed_text'].str.strip() != ''].reset_index(drop=True)
-print(f"   After preprocessing (non-empty): {len(df):,} articles")
+print(f"   After preprocessing: {len(df):,} articles")
 
 # ============================================
 # STEP 3: TRAIN-TEST SPLIT
@@ -119,12 +102,12 @@ print(f"   Training set: {len(X_train):,} samples")
 print(f"   Test set: {len(X_test):,} samples")
 
 # ============================================
-# STEP 4: TF-IDF VECTORIZATION
+# STEP 4: TF-IDF VECTORIZATION (Reduced features)
 # ============================================
 print("\n📝 STEP 4: Creating TF-IDF Features...")
 
 vectorizer = TfidfVectorizer(
-    max_features=15000,           # Increased for larger dataset
+    max_features=10000,           # ← REDUCED from 15000 to 10000
     ngram_range=(1, 2),
     sublinear_tf=True,
     min_df=3,
@@ -146,25 +129,15 @@ print("\n🤖 STEP 5: Initializing Models...")
 models = {
     'Logistic Regression': {
         'model': LogisticRegression(random_state=42, max_iter=1000),
-        'params': {
-            'C': [0.1, 0.5, 1.0, 2.0, 5.0],
-            'solver': ['liblinear', 'lbfgs']
-        }
+        'params': {'C': [0.1, 0.5, 1.0, 2.0, 5.0], 'solver': ['liblinear', 'lbfgs']}
     },
     'Passive Aggressive': {
         'model': PassiveAggressiveClassifier(random_state=42, max_iter=1000),
-        'params': {
-            'C': [0.01, 0.1, 0.5, 1.0],
-            'loss': ['hinge', 'squared_hinge']
-        }
+        'params': {'C': [0.01, 0.1, 0.5, 1.0], 'loss': ['hinge', 'squared_hinge']}
     },
     'Random Forest': {
         'model': RandomForestClassifier(random_state=42, n_jobs=-1),
-        'params': {
-            'n_estimators': [100, 200],
-            'max_depth': [10, 20, None],
-            'min_samples_split': [2, 5]
-        }
+        'params': {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_split': [2, 5]}
     }
 }
 
@@ -182,20 +155,10 @@ best_vectorizer = None
 
 for name, config in models.items():
     print(f"\n📌 Training {name}...")
-    
-    grid_search = GridSearchCV(
-        config['model'],
-        config['params'],
-        cv=5,
-        scoring='f1',
-        n_jobs=-1,
-        verbose=0
-    )
-    
+    grid_search = GridSearchCV(config['model'], config['params'], cv=5, scoring='f1', n_jobs=-1, verbose=0)
     grid_search.fit(X_train_tfidf, y_train)
     model = grid_search.best_estimator_
     y_pred = model.predict(X_test_tfidf)
-    y_pred_proba = model.predict_proba(X_test_tfidf)[:, 1] if hasattr(model, 'predict_proba') else None
     
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred)
@@ -232,14 +195,11 @@ print("=" * 70)
 
 results_df = pd.DataFrame(results)
 print(results_df.to_string(index=False))
-
 print(f"\n🏆 BEST MODEL: {best_name} with F1-Score: {best_score:.4f}")
 
 # ============================================
 # STEP 8: CONFUSION MATRIX & REPORT
 # ============================================
-print("\n📊 STEP 8: Confusion Matrix Analysis...")
-
 y_pred_best = best_model.predict(X_test_tfidf)
 cm = confusion_matrix(y_test, y_pred_best)
 
@@ -260,19 +220,26 @@ print("\n📋 Detailed Classification Report:")
 print(classification_report(y_test, y_pred_best, target_names=['REAL', 'FAKE']))
 
 # ============================================
-# STEP 9: SAVE MODEL AND VECTORIZER
+# STEP 9: SAVE MODEL AND VECTORIZER (Compressed joblib)
 # ============================================
-print("\n💾 STEP 9: Saving Model and Vectorizer...")
+print("\n💾 STEP 9: Saving Model and Vectorizer (compressed joblib)...")
 
 os.makedirs('models', exist_ok=True)
 
+# Save best model with compression level 3
+joblib.dump(best_model, 'models/model.joblib', compress=3)
+print(f"   ✅ Model saved to: models/model.joblib (compressed)")
+
+# Save vectorizer with compression
+joblib.dump(best_vectorizer, 'models/vectorizer.joblib', compress=3)
+print(f"   ✅ Vectorizer saved to: models/vectorizer.joblib (compressed)")
+
+# For backward compatibility, also save as .pkl if you want (optional)
 with open('models/model.pkl', 'wb') as f:
     pickle.dump(best_model, f)
-print(f"   ✅ Model saved to: models/model.pkl")
-
 with open('models/vectorizer.pkl', 'wb') as f:
     pickle.dump(best_vectorizer, f)
-print(f"   ✅ Vectorizer saved to: models/vectorizer.pkl")
+print(f"   ✅ Also saved .pkl versions for compatibility")
 
 results_df.to_csv('models/training_results.csv', index=False)
 print(f"   ✅ Results saved to: models/training_results.csv")
@@ -371,4 +338,6 @@ print(f"\n🏆 Best Model: {best_name}")
 print(f"📊 Accuracy: {accuracy_score(y_test, y_pred_best)*100:.2f}%")
 print(f"📊 F1-Score: {f1_score(y_test, y_pred_best)*100:.2f}%")
 print("\n📁 Output files saved in 'models/' directory.")
+print("   - model.joblib, vectorizer.joblib (compressed)")
+print("   - model.pkl, vectorizer.pkl (backup)")
 print("=" * 70)
