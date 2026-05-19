@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 import re
 import random
 from urllib.parse import urlparse
-from newspaper import Article
 
 class NewsScraper:
     _cache = {}
@@ -16,6 +15,11 @@ class NewsScraper:
     
     def get_headers(self):
         return {'User-Agent': random.choice(self.user_agents)}
+
+    def clean_text(self, text):
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[^\w\s\.\,\!\?\'\"]', '', text)
+        return text.strip()
 
     def scrape_article(self, url):
         if url in self._cache:
@@ -38,48 +42,57 @@ class NewsScraper:
             result['domain'] = urlparse(url).netloc.replace('www.', '')
             print(f"📡 Scraping: {url}")
 
-            # === Method 1: newspaper3k (best for news) ===
-            article = Article(url)
-            article.download()
-            article.parse()
-            result['title'] = article.title or ''
-            result['text'] = article.text or ''
-            result['word_count'] = len(result['text'].split())
-            print(f"   newspaper3k: {result['word_count']} words")
+            response = requests.get(url, headers=self.get_headers(), timeout=12)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, 'html.parser')
 
-            # If too short, fallback to requests + BeautifulSoup
-            if result['word_count'] < 80:
-                print("   Low content, trying requests + BeautifulSoup")
-                response = requests.get(url, headers=self.get_headers(), timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.content, 'html.parser')
-                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                    tag.decompose()
-                title_tag = soup.find('h1')
-                if title_tag:
-                    result['title'] = title_tag.get_text(strip=True)
-                paragraphs = []
-                # Try article container
-                for selector in ['article', 'main', '.article-body', '.content']:
-                    container = soup.select_one(selector)
-                    if container:
-                        for p in container.find_all('p'):
-                            text = p.get_text(strip=True)
-                            if len(text) > 40:
-                                paragraphs.append(text)
-                        break
-                if not paragraphs:
-                    for p in soup.find_all('p'):
+            # Remove noisy elements
+            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe']):
+                tag.decompose()
+
+            # Extract title
+            title_tag = soup.find('h1')
+            if not title_tag:
+                title_tag = soup.find('title')
+            result['title'] = title_tag.get_text(strip=True) if title_tag else ''
+
+            # Extract meta description
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            meta = meta_desc.get('content', '') if meta_desc else ''
+
+            # Extract paragraphs
+            paragraphs = []
+            # Try common article containers
+            for selector in ['article', 'main', '.article-body', '.content', '.post-content']:
+                container = soup.select_one(selector)
+                if container:
+                    for p in container.find_all('p'):
                         text = p.get_text(strip=True)
-                        if len(text) > 40 and not text.startswith(('Subscribe', 'Sign', 'Follow', 'Share')):
+                        if len(text) > 40:
                             paragraphs.append(text)
-                result['text'] = ' '.join(paragraphs)
-                result['word_count'] = len(result['text'].split())
+                    if len(paragraphs) > 5:
+                        break
+            if len(paragraphs) < 3:
+                # Fallback: all p tags
+                for p in soup.find_all('p'):
+                    text = p.get_text(strip=True)
+                    if len(text) > 40 and not text.startswith(('Subscribe', 'Sign', 'Follow', 'Share', 'Advertisement')):
+                        paragraphs.append(text)
 
-            # Final fallback (never generic)
-            if result['word_count'] < 30:
-                result['text'] = f"Article from {result['domain']}. Title: {result['title']}. Read more at: {url}"
-                result['word_count'] = len(result['text'].split())
+            full_text = ' '.join(paragraphs)
+            full_text = self.clean_text(full_text)
+            word_count = len(full_text.split())
+            print(f"   Extracted {len(paragraphs)} paragraphs, {word_count} words")
+
+            # Build meaningful content – never generic
+            if word_count < 80:
+                fallback = f"{result['title']}. {meta} Source: {result['domain']} – {url}"
+                result['text'] = fallback[:2000]
+                result['word_count'] = len(fallback.split())
+                print(f"⚠️ Low content – using title+meta+URL fallback ({result['word_count']} words)")
+            else:
+                result['text'] = full_text
+                result['word_count'] = word_count
 
             result['success'] = True
             print(f"✅ Success: {result['word_count']} words")
@@ -87,9 +100,10 @@ class NewsScraper:
         except Exception as e:
             # Never fail – return descriptive text
             result['success'] = True
-            result['text'] = f"Article from {result['domain']}. Title: {result['title'] if result['title'] else 'No title'}. Read more at: {url}"
-            result['word_count'] = len(result['text'].split())
-            print(f"⚠️ Scraper fallback: {e}")
+            fallback = f"News article from {result['domain']}. Title: {result['title'] if result['title'] else 'No title'}. Read more at: {url}"
+            result['text'] = fallback[:2000]
+            result['word_count'] = len(fallback.split())
+            print(f"⚠️ Fallback used: {str(e)[:50]} – {result['word_count']} words")
 
         self._cache[url] = result.copy()
         return result

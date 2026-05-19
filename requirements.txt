@@ -79,4 +79,3 @@ tzdata==2026.2
 urllib3==2.7.0
 Werkzeug==2.3.7
 WTForms==3.0.1
-newspaper3k==0.2.8
