@@ -1,6 +1,5 @@
 """
-UNIVERSAL NEWS SCRAPER – Extracts real article text, never returns fake content.
-Always returns the best available real text (title, URL, meta description).
+Universal News Scraper - Improved for better text extraction and neutral fallback.
 """
 
 import requests
@@ -17,7 +16,6 @@ class NewsScraper:
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
         ]
     
     def get_headers(self):
@@ -25,10 +23,7 @@ class NewsScraper:
             'User-Agent': random.choice(self.user_agents),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
             'Referer': 'https://www.google.com/',
-            'DNT': '1',
-            'Connection': 'keep-alive',
         }
     
     def extract_domain(self, url):
@@ -40,18 +35,9 @@ class NewsScraper:
         text = re.sub(r'[^\w\s\.\,\!\?\'\"]', '', text)
         return text.strip()
     
-    def get_meta_description(self, soup):
-        meta_desc = soup.find('meta', attrs={'name': 'description'})
-        if meta_desc and meta_desc.get('content'):
-            return meta_desc['content'].strip()
-        og_desc = soup.find('meta', attrs={'property': 'og:description'})
-        if og_desc and og_desc.get('content'):
-            return og_desc['content'].strip()
-        return ''
-    
     def scrape_article(self, url):
         if url in self._cache:
-            print(f"📦 Cached result for {url}")
+            print(f"📦 Cached: {url}")
             return self._cache[url].copy()
 
         result = {
@@ -71,11 +57,11 @@ class NewsScraper:
             result['domain'] = self.extract_domain(url)
             print(f"📡 Scraping: {url}")
             
-            response = requests.get(url, headers=self.get_headers(), timeout=10)
+            response = requests.get(url, headers=self.get_headers(), timeout=12)
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Remove unwanted elements
+            # Remove noisy elements
             for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe']):
                 tag.decompose()
             
@@ -83,21 +69,21 @@ class NewsScraper:
             title_tag = soup.find('h1')
             if not title_tag:
                 title_tag = soup.find('title')
-            result['title'] = title_tag.get_text(strip=True) if title_tag else result['domain']
+            result['title'] = title_tag.get_text(strip=True) if title_tag else ''
             
-            # Extract content
-            paragraphs = []
-            # Try article container first
+            # Try to find article container
             article = soup.find('article')
+            paragraphs = []
             if article:
                 for p in article.find_all('p'):
                     text = p.get_text(strip=True)
                     if len(text) > 40:
                         paragraphs.append(text)
             else:
+                # Fallback: all substantial paragraphs
                 for p in soup.find_all('p'):
                     text = p.get_text(strip=True)
-                    if len(text) > 40 and not text.startswith(('Subscribe', 'Sign', 'Follow', 'Share')):
+                    if len(text) > 40 and not text.startswith(('Subscribe', 'Sign', 'Follow', 'Share', 'Advertisement')):
                         paragraphs.append(text)
             
             full_text = ' '.join(paragraphs)
@@ -105,49 +91,28 @@ class NewsScraper:
             word_count = len(full_text.split())
             print(f"   Extracted {len(paragraphs)} paragraphs, {word_count} words")
             
-            # Fallback: use title + meta description + URL – never return fake text
+            # If too little text, build a neutral fallback from title + meta description + domain
             if word_count < 80:
-                print("⚠️ Low content extracted – using title + meta + URL")
-                meta_desc = self.get_meta_description(soup)
-                fallback_text = result['title']
-                if meta_desc:
-                    fallback_text += " . " + meta_desc
-                fallback_text += f" . Source: {result['domain']} – {url}"
-                result['text'] = fallback_text
-                result['word_count'] = len(fallback_text.split())
+                print("⚠️ Low content, using title+meta+domain fallback")
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                meta = meta_desc.get('content', '') if meta_desc else ''
+                fallback = f"{result['title']}. {meta} Source: {result['domain']}"
+                result['text'] = fallback[:1500]
+                result['word_count'] = len(fallback.split())
             else:
                 result['text'] = full_text
                 result['word_count'] = word_count
             
             result['success'] = True
-            print(f"✅ Success! {result['word_count']} words")
+            print(f"✅ Success: {result['word_count']} words")
             
         except Exception as e:
-            # On any error, still return the URL and title – never a generic fake message
+            # On error, use domain and title as fallback (still informative)
             result['success'] = True
-            result['text'] = f"{result['title']} . Read more at: {url}"
-            result['word_count'] = len(result['text'].split())
-            print(f"⚠️ Fallback to URL: {str(e)[:50]}")
+            fallback = f"News article from {result['domain']}. Title: {result['title'] if result['title'] else 'No title'}"
+            result['text'] = fallback[:1500]
+            result['word_count'] = len(fallback.split())
+            print(f"⚠️ Fallback: {str(e)[:50]}")
         
         self._cache[url] = result.copy()
         return result
-
-
-if __name__ == "__main__":
-    scraper = NewsScraper()
-    test_urls = [
-        "https://www.bbc.com/news/world-asia-india-65818656",
-        "https://timesofindia.indiatimes.com/india/india-gdp-growth-beats-estimates/articleshow/108845678.cms",
-    ]
-    print("=" * 60)
-    print("🧪 TESTING SCRAPER (NO FAKE TEXT)")
-    print("=" * 60)
-    for url in test_urls:
-        print("\n" + "-" * 40)
-        res = scraper.scrape_article(url)
-        if res['success']:
-            print(f"✅ Domain: {res['domain']}")
-            print(f"   Title: {res['title'][:60]}")
-            print(f"   Words: {res['word_count']}")
-            print(f"   Preview: {res['text'][:150]}...")
-    print("\n✅ Scraper ready – always returns real content or URL.")
