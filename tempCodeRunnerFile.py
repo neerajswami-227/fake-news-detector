@@ -28,7 +28,16 @@ from hindi_preprocess import preprocess_hindi   # only if you have Hindi preproc
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fake_news.db'
+
+# Database configuration – supports both local SQLite and cloud PostgreSQL
+import os
+if os.environ.get('DATABASE_URL'):
+    # On Render (or any cloud with DATABASE_URL env var): use PostgreSQL
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL').replace('postgres://', 'postgresql://', 1)
+else:
+    # On your local machine: use SQLite
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///fake_news.db'
+    
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 CORS(app)   # allow all origins for development
