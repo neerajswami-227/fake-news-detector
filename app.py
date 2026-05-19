@@ -38,6 +38,16 @@ nltk.download('averaged_perceptron_tagger', quiet=True)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
 
+from datetime import datetime, timedelta
+
+@app.template_filter('to_ist')
+def to_ist(utc_dt):
+    """Convert UTC datetime to Indian Standard Time (UTC+5:30) and format nicely."""
+    if utc_dt is None:
+        return ''
+    ist_dt = utc_dt + timedelta(hours=5, minutes=30)
+    return ist_dt.strftime('%b %d, %Y %I:%M %p')
+
 # Database configuration – supports both local SQLite and cloud PostgreSQL
 import os
 if os.environ.get('DATABASE_URL'):
